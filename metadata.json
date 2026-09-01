@@ -1,0 +1,6 @@
+{
+  "name": "Ghana NSBC Learner Plan & Notes",
+  "description": "Generate lesson plans, learner writing notes, and exercises (Fill in blanks, MCQs, Matching) based on Ghana's New Standard-Based Curriculum (NSBC). Supports DOCX and PDF export and works offline.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
