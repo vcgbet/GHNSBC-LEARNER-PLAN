@@ -15,7 +15,7 @@ function curriculumLevelFix(): Plugin {
     name: 'curriculum-level-fix',
     enforce: 'pre',
     transform(code, id) {
-      if (!id.endsWith('/src/components/FormInput.tsx')) return null;
+      if (!id.split('?')[0].endsWith('/src/components/FormInput.tsx')) return null;
 
       const start = code.indexOf('  // Available subjects and cascading curriculum data from database');
       const end = code.indexOf('  const handleResetToSubjectPresets = () => {');
@@ -42,7 +42,7 @@ function curriculumLevelFix(): Plugin {
   // A Basic-level record is valid ONLY when its curriculum codes belong to
   // the selected level. Never fall back to another Basic level.
   const hasExactBasicCode = (value: any, prefix: string) =>
-    !!value?.code && new RegExp('^' + prefix.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '\\.').test(String(value.code).trim().toUpperCase());
+    !!value?.code && String(value.code).trim().toUpperCase().startsWith(prefix + '.');
 
   const filterSubStrandForLevel = (ss: any, classLevel: string) => {
     if (!ss) return null;
