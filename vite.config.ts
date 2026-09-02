@@ -5,12 +5,10 @@ import { defineConfig, type Plugin } from 'vite';
 
 /**
  * Build-time curriculum fix.
- *
  * The curriculum data contains Primary and JHS strands in the same subject
- * object. FormInput historically selected the first matching strand without
- * considering the selected class level, which could make Basic 7-9 show a
- * Basic 1-6 Content Standard. This transform keeps the existing FormInput
- * UI/features intact while making the curriculum cascade level-aware.
+ * object. FormInput historically selected strands/content standards without
+ * considering the selected class level. This transform makes the existing
+ * curriculum cascade level-aware without changing the existing UI/features.
  */
 function curriculumLevelFix(): Plugin {
   return {
@@ -35,16 +33,14 @@ function curriculumLevelFix(): Plugin {
     // levels array (e.g. ['Basic 7']) and a _jhs id marker.
     if (['B7', 'B8', 'B9'].includes(prefix)) {
       const target = prefix === 'B7' ? 'Basic 7' : prefix === 'B8' ? 'Basic 8' : 'Basic 9';
-      const jhs = strands.filter((s: any) => {
+      return strands.filter((s: any) => {
         const levels = Array.isArray(s.levels) ? s.levels.map((v: any) => String(v).toLowerCase()) : [];
         const id = String(s.id || '').toLowerCase();
         return levels.includes(target.toLowerCase()) || id.includes('_jhs');
       });
-      return jhs;
     }
 
-    // Primary strands are the non-JHS strands. For Basic 1-6, their content
-    // standards are filtered below by the exact B1-B6 code prefix.
+    // Basic 1-6 uses the Primary strands; KG/Nursery datasets are preserved.
     return strands.filter((s: any) => !String(s.id || '').toLowerCase().includes('_jhs'));
   };
 
@@ -52,10 +48,9 @@ function curriculumLevelFix(): Plugin {
     if (!subStrand) return [];
     const all = subStrand.contentStandards || [];
     const prefix = getLevelPrefix(classLevel);
-    const basicPrefix = /^B[1-9]\./i.test(String(all[0]?.code || '')) ||
-      all.some((cs: any) => /^B[1-9]\./i.test(String(cs?.code || '')));
+    const hasBasicCodes = all.some((cs: any) => /^B[1-9]\./i.test(String(cs?.code || '')));
 
-    if (basicPrefix && /^B[1-9]$/.test(prefix)) {
+    if (hasBasicCodes && /^B[1-9]$/.test(prefix)) {
       const matching = all.filter((cs: any) => String(cs?.code || '').toUpperCase().startsWith(prefix + '.'));
       if (matching.length) return matching;
     }
@@ -129,8 +124,8 @@ function curriculumLevelFix(): Plugin {
       subject: subjectName,
       strand: firstStrand ? firstStrand.name : '',
       subStrand: firstSubStrand ? firstSubStrand.name : '',
-      contentStandard: bestCS ? \`\${bestCS.code}: \${bestCS.description}\` : '',
-      indicator: firstInd ? \`\${firstInd.code}: \${firstInd.description}\` : '',
+      contentStandard: bestCS ? bestCS.code + ': ' + bestCS.description : '',
+      indicator: firstInd ? firstInd.code + ': ' + firstInd.description : '',
       references: autoRef
     }));
   };
@@ -153,8 +148,8 @@ function curriculumLevelFix(): Plugin {
       ...prev,
       strand: strandName,
       subStrand: firstSubStrand ? firstSubStrand.name : '',
-      contentStandard: bestCS ? \`\${bestCS.code}: \${bestCS.description}\` : '',
-      indicator: firstInd ? \`\${firstInd.code}: \${firstInd.description}\` : '',
+      contentStandard: bestCS ? bestCS.code + ': ' + bestCS.description : '',
+      indicator: firstInd ? firstInd.code + ': ' + firstInd.description : '',
       references: autoRef
     }));
   };
@@ -175,8 +170,8 @@ function curriculumLevelFix(): Plugin {
     setInputs(prev => ({
       ...prev,
       subStrand: subStrandName,
-      contentStandard: bestCS ? \`\${bestCS.code}: \${bestCS.description}\` : '',
-      indicator: firstInd ? \`\${firstInd.code}: \${firstInd.description}\` : '',
+      contentStandard: bestCS ? bestCS.code + ': ' + bestCS.description : '',
+      indicator: firstInd ? firstInd.code + ': ' + firstInd.description : '',
       references: autoRef
     }));
   };
@@ -198,8 +193,8 @@ function curriculumLevelFix(): Plugin {
 
     setInputs(prev => ({
       ...prev,
-      contentStandard: csData ? \`\${csData.code}: \${csData.description}\` : csCode,
-      indicator: firstInd ? \`\${firstInd.code}: \${firstInd.description}\` : '',
+      contentStandard: csData ? csData.code + ': ' + csData.description : csCode,
+      indicator: firstInd ? firstInd.code + ': ' + firstInd.description : '',
       references: autoRef
     }));
   };
@@ -233,14 +228,13 @@ function curriculumLevelFix(): Plugin {
 
     setInputs(prev => ({
       ...prev,
-      ...(csData ? { contentStandard: \`\${csData.code}: \${csData.description}\` } : {}),
-      indicator: indData ? \`\${indData.code}: \${indData.description}\` : indCode,
+      ...(csData ? { contentStandard: csData.code + ': ' + csData.description } : {}),
+      indicator: indData ? indData.code + ': ' + indData.description : indCode,
       references: autoRef
     }));
   };
 
-  // Changing class level must recalculate the whole curriculum cascade,
-  // not merely swap the Content Standard inside the previous level's strand.
+  // Changing class level recalculates the entire curriculum cascade.
   const handleClassLevelChange = (newLevel: string) => {
     const subjData = GHANA_CURRICULUM_DATA.find(s => normalize(s.name) === normalize(inputs.subject)) || GHANA_CURRICULUM_DATA[0];
     const levelStrands = getStrandsForLevel(subjData, newLevel);
@@ -263,8 +257,8 @@ function curriculumLevelFix(): Plugin {
       classLevel: newLevel,
       strand: newStrand ? newStrand.name : '',
       subStrand: newSubStrand ? newSubStrand.name : '',
-      contentStandard: bestCS ? \`\${bestCS.code}: \${bestCS.description}\` : '',
-      indicator: firstInd ? \`\${firstInd.code}: \${firstInd.description}\` : '',
+      contentStandard: bestCS ? bestCS.code + ': ' + bestCS.description : '',
+      indicator: firstInd ? firstInd.code + ': ' + firstInd.description : '',
       references: autoRef
     }));
   };
