@@ -2,11 +2,53 @@ import React, { useState } from 'react';
 import { Compass, BookOpen, Layers, CheckCircle2, Search, ChevronRight, BookmarkCheck } from 'lucide-react';
 import { GHANA_CURRICULUM_DATA } from '../data/ghanaCurriculum';
 
+// Map a class level ("Basic 7", "KG 1", "Nursery 2", ...) to its code prefix
+const levelToPrefix = (level: string): string | null => {
+  const m = level.toLowerCase().match(/^basic\s+(\d)$/);
+  if (m) return `B${m[1]}`;
+  const kg = level.toLowerCase().match(/^kg\s*(\d)$/);
+  if (kg) return `K${kg[1]}`;
+  const n = level.toLowerCase().match(/^nursery\s*(\d)$/);
+  if (n) return `N${n[1]}`;
+  return null;
+};
+
 export const CurriculumBrowser: React.FC = () => {
   const [selectedSubjectId, setSelectedSubjectId] = useState<string>(GHANA_CURRICULUM_DATA[0].id);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [levelFilter, setLevelFilter] = useState<string>('All');
 
   const subject = GHANA_CURRICULUM_DATA.find(s => s.id === selectedSubjectId) || GHANA_CURRICULUM_DATA[0];
+
+  // Ordered, de-duplicated levels offered as filter chips for this subject
+  const levelOptions: string[] = [];
+  for (const lvl of subject.levels) {
+    if (!levelOptions.includes(lvl)) levelOptions.push(lvl);
+  }
+  const effectiveLevel = levelOptions.includes(levelFilter) ? levelFilter : 'All';
+
+  // Apply the level filter: strands with an explicit `levels` tag show only
+  // for their level(s); untagged (primary) strands get their content
+  // standards filtered by the level's code prefix.
+  const prefix = effectiveLevel === 'All' ? null : levelToPrefix(effectiveLevel);
+  const visibleStrands = subject.strands
+    .map(strand => {
+      if (strand.levels && strand.levels.length > 0) {
+        return effectiveLevel === 'All' || strand.levels.includes(effectiveLevel) ? strand : null;
+      }
+      if (!prefix) return strand;
+      const filtered = {
+        ...strand,
+        subStrands: strand.subStrands
+          .map(ss => ({
+            ...ss,
+            contentStandards: ss.contentStandards.filter(cs => cs.code.toUpperCase().startsWith(prefix))
+          }))
+          .filter(ss => ss.contentStandards.length > 0)
+      };
+      return filtered.subStrands.length > 0 ? filtered : null;
+    })
+    .filter(s => s !== null);
 
   return (
     <div id="curriculum-browser-container" className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden space-y-0">
@@ -46,10 +88,33 @@ export const CurriculumBrowser: React.FC = () => {
             <h3 className="text-base font-bold text-slate-900">{subject.name} Syllabus Framework</h3>
             <p className="text-xs text-slate-500">Applicable for: {subject.levels.join(', ')}</p>
           </div>
+
+          {/* Class-level filter (JHS strand entries are per-level) */}
+          <div className="flex items-center gap-1.5 flex-wrap justify-end">
+            {['All', ...levelOptions].map(lvl => (
+              <button
+                key={lvl}
+                type="button"
+                onClick={() => setLevelFilter(lvl)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border ${
+                  effectiveLevel === lvl
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                }`}
+              >
+                {lvl === 'All' ? 'All Levels' : lvl}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="space-y-6">
-          {subject.strands.map(strand => (
+          {visibleStrands.length === 0 && (
+            <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl p-4">
+              No syllabus content for {effectiveLevel} in this subject.
+            </p>
+          )}
+          {visibleStrands.map(strand => (
             <div key={strand.id} className="bg-slate-50 rounded-2xl border border-slate-200 p-4 space-y-4">
               <h4 className="text-sm font-bold text-blue-950 flex items-center gap-2 border-b border-slate-200 pb-2">
                 <BookOpen className="w-4 h-4 text-blue-600" />

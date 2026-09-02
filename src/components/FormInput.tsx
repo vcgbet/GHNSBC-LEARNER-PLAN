@@ -101,8 +101,8 @@ export const FormInput: React.FC<FormInputProps> = ({ onSubmit, isLoading, isOnl
     if (lvl.includes('4') && (lvl.includes('basic') || lvl.includes('primary') || lvl.includes('b4'))) return 'B4';
     if (lvl.includes('5') && (lvl.includes('basic') || lvl.includes('primary') || lvl.includes('b5'))) return 'B5';
     if (lvl.includes('6') && (lvl.includes('basic') || lvl.includes('primary') || lvl.includes('b6'))) return 'B6';
-    if (lvl.includes('kg 1') || lvl.includes('kg1') || lvl.includes('kindergarten 1')) return 'KG1';
-    if (lvl.includes('kg 2') || lvl.includes('kg2') || lvl.includes('kindergarten 2')) return 'KG2';
+    if (lvl.includes('kg 1') || lvl.includes('kg1') || lvl.includes('kindergarten 1')) return 'K1';
+    if (lvl.includes('kg 2') || lvl.includes('kg2') || lvl.includes('kindergarten 2')) return 'K2';
     if (lvl.includes('nursery 1') || lvl.includes('n1')) return 'N1';
     if (lvl.includes('nursery 2') || lvl.includes('n2')) return 'N2';
     return 'B4';
@@ -116,6 +116,20 @@ export const FormInput: React.FC<FormInputProps> = ({ onSubmit, isLoading, isOnl
     return matching || subStrand.contentStandards[0];
   };
 
+  // Level-aware visibility: for the chosen class level, only strands /
+  // sub-strands that actually carry content standards for that level are
+  // offered (JHS per-level strand entries carry an explicit `levels` tag).
+  // Falls back to the unfiltered lists when a subject has no level-specific
+  // data, so a dropdown never comes up empty.
+  const levelPrefix = getLevelPrefix(inputs.classLevel);
+  const csMatchesLevel = (cs: any) =>
+    !!cs?.code && String(cs.code).toUpperCase().startsWith(levelPrefix);
+  const strandMatchesLevel = (strand: any) =>
+    (strand?.levels && strand.levels.includes(inputs.classLevel)) ||
+    (strand?.subStrands || []).some((ss: any) => (ss?.contentStandards || []).some(csMatchesLevel));
+  const subStrandMatchesLevel = (ss: any) =>
+    (ss?.contentStandards || []).some(csMatchesLevel);
+
   // Available subjects and cascading curriculum data from database
   const selectedSubjectData = GHANA_CURRICULUM_DATA.find(s => 
     s.name.toLowerCase() === inputs.subject.toLowerCase() || 
@@ -123,7 +137,9 @@ export const FormInput: React.FC<FormInputProps> = ({ onSubmit, isLoading, isOnl
     s.name.toLowerCase().includes(inputs.subject.toLowerCase())
   ) || GHANA_CURRICULUM_DATA[0];
   
-  const availableStrands = selectedSubjectData ? selectedSubjectData.strands : [];
+  const allStrands = selectedSubjectData ? selectedSubjectData.strands : [];
+  const levelStrands = allStrands.filter(strandMatchesLevel);
+  const availableStrands = levelStrands.length > 0 ? levelStrands : allStrands;
   
   const selectedStrandData = availableStrands.find(s => 
     s.name.toLowerCase() === inputs.strand.toLowerCase() || 
@@ -131,7 +147,9 @@ export const FormInput: React.FC<FormInputProps> = ({ onSubmit, isLoading, isOnl
     s.name.toLowerCase().includes(inputs.strand.toLowerCase())
   ) || availableStrands[0];
   
-  const availableSubStrands = selectedStrandData ? selectedStrandData.subStrands : [];
+  const allSubStrands = selectedStrandData ? selectedStrandData.subStrands : [];
+  const levelSubStrands = allSubStrands.filter(subStrandMatchesLevel);
+  const availableSubStrands = levelSubStrands.length > 0 ? levelSubStrands : allSubStrands;
   
   const selectedSubStrandData = availableSubStrands.find(ss => 
     ss.name.toLowerCase() === inputs.subStrand.toLowerCase() || 
@@ -158,8 +176,10 @@ export const FormInput: React.FC<FormInputProps> = ({ onSubmit, isLoading, isOnl
   // Auto update cascades when subject changes
   const handleSubjectChange = (subjectName: string) => {
     const subjData = GHANA_CURRICULUM_DATA.find(s => s.name.toLowerCase() === subjectName.toLowerCase()) || GHANA_CURRICULUM_DATA[0];
-    const firstStrand = subjData.strands[0];
-    const firstSubStrand = firstStrand?.subStrands[0];
+    const lvlStrands = subjData.strands.filter(strandMatchesLevel);
+    const strandPool = lvlStrands.length > 0 ? lvlStrands : subjData.strands;
+    const firstStrand = strandPool[0];
+    const firstSubStrand = (firstStrand?.subStrands || []).find(subStrandMatchesLevel) || firstStrand?.subStrands?.[0];
     const bestCS = getBestCSForSubStrand(firstSubStrand, inputs.classLevel);
     const firstInd = bestCS?.indicators[0];
 
@@ -184,7 +204,7 @@ export const FormInput: React.FC<FormInputProps> = ({ onSubmit, isLoading, isOnl
 
   const handleStrandChange = (strandName: string) => {
     const strData = availableStrands.find(s => s.name === strandName);
-    const firstSubStrand = strData?.subStrands[0];
+    const firstSubStrand = (strData?.subStrands || []).find(subStrandMatchesLevel) || strData?.subStrands?.[0];
     const bestCS = getBestCSForSubStrand(firstSubStrand, inputs.classLevel);
     const firstInd = bestCS?.indicators[0];
 
@@ -286,19 +306,41 @@ export const FormInput: React.FC<FormInputProps> = ({ onSubmit, isLoading, isOnl
   };
 
   const handleClassLevelChange = (newLevel: string) => {
-    const bestCS = getBestCSForSubStrand(selectedSubStrandData, newLevel);
+    const prefix = getLevelPrefix(newLevel);
+    const csHas = (cs: any) => !!cs?.code && String(cs.code).toUpperCase().startsWith(prefix);
+    const subHas = (ss: any) => (ss?.contentStandards || []).some(csHas);
+    const strHas = (st: any) =>
+      (st?.levels && st.levels.includes(newLevel)) || (st?.subStrands || []).some(subHas);
+
+    const allStrands = selectedSubjectData?.strands || [];
+    const lvlStrands = allStrands.filter(strHas);
+    const strandPool = lvlStrands.length > 0 ? lvlStrands : allStrands;
+    const keepStrand = !!selectedStrandData &&
+      (strHas(selectedStrandData) || (lvlStrands.length === 0 && allStrands.some(s => s.name === selectedStrandData.name)));
+    const strData = keepStrand ? selectedStrandData : strandPool[0];
+
+    const allSubs = strData?.subStrands || [];
+    const lvlSubs = allSubs.filter(subHas);
+    const subPool = lvlSubs.length > 0 ? lvlSubs : allSubs;
+    const keepSub = !!selectedSubStrandData &&
+      (subHas(selectedSubStrandData) || (lvlSubs.length === 0 && allSubs.some(ss => ss.name === selectedSubStrandData.name)));
+    const ssData = keepSub ? selectedSubStrandData : subPool[0];
+
+    const bestCS = getBestCSForSubStrand(ssData, newLevel);
     const firstInd = bestCS?.indicators[0];
     const autoRef = getNaCCACurriculumReference(
       inputs.subject,
       newLevel,
-      inputs.strand,
-      inputs.subStrand,
+      strData ? strData.name : inputs.strand,
+      ssData ? ssData.name : inputs.subStrand,
       firstInd ? firstInd.code : ''
     );
 
     setInputs(prev => ({
       ...prev,
       classLevel: newLevel,
+      ...(strData && !keepStrand ? { strand: strData.name } : {}),
+      ...(ssData && !keepSub ? { subStrand: ssData.name } : {}),
       ...(bestCS ? {
         contentStandard: `${bestCS.code}: ${bestCS.description}`,
         indicator: firstInd ? `${firstInd.code}: ${firstInd.description}` : prev.indicator
