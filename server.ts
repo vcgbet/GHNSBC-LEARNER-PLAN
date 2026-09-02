@@ -536,4 +536,10 @@ async function startServer() {
   });
 }
 
-startServer();
+// Vercel imports this Express app as a serverless function.
+// Local development still uses the existing Express/Vite server.
+export default app;
+
+if (!process.env.VERCEL) {
+  startServer();
+}
