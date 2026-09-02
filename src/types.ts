@@ -22,6 +22,9 @@ export interface GhanaCurriculumStrand {
   id: string;
   name: string; // e.g. "Strand 1: Number"
   subStrands: GhanaCurriculumSubStrand[];
+  // Optional: when set, this strand entry applies only to these class levels
+  // (used for the JHS per-level strand entries, e.g. ["Basic 7"]).
+  levels?: string[];
 }
 
 export interface GhanaSubjectData {
