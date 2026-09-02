@@ -7,8 +7,8 @@ import { defineConfig, type Plugin } from 'vite';
  * Build-time curriculum fix.
  * The curriculum data contains Primary and JHS strands in the same subject
  * object. FormInput historically selected strands/content standards without
- * considering the selected class level. This transform makes the existing
- * curriculum cascade level-aware without changing the existing UI/features.
+ * considering the selected class level. This transform makes the existing UI
+ * strictly level-aware without changing the existing features.
  */
 function curriculumLevelFix(): Plugin {
   return {
@@ -21,81 +21,71 @@ function curriculumLevelFix(): Plugin {
       const end = code.indexOf('  const handleResetToSubjectPresets = () => {');
       if (start === -1 || end === -1 || end <= start) return null;
 
-      const replacement = String.raw`  // Level-aware curriculum helpers.
+      const replacement = String.raw`  // Strict level-aware curriculum helpers.
   const normalize = (value: string) => (value || '').toLowerCase().trim();
 
   const getLevelPrefix = (classLevel: string) => {
     const lvl = normalize(classLevel);
-    if (lvl.includes('7') || lvl.includes('jhs 1') || lvl.includes('jhs1')) return 'B7';
-    if (lvl.includes('8') || lvl.includes('jhs 2') || lvl.includes('jhs2')) return 'B8';
-    if (lvl.includes('9') || lvl.includes('jhs 3') || lvl.includes('jhs3')) return 'B9';
-    if (lvl.includes('1') && (lvl.includes('basic') || lvl.includes('primary') || lvl.includes('b1'))) return 'B1';
-    if (lvl.includes('2') && (lvl.includes('basic') || lvl.includes('primary') || lvl.includes('b2'))) return 'B2';
-    if (lvl.includes('3') && (lvl.includes('basic') || lvl.includes('primary') || lvl.includes('b3'))) return 'B3';
-    if (lvl.includes('4') && (lvl.includes('basic') || lvl.includes('primary') || lvl.includes('b4'))) return 'B4';
-    if (lvl.includes('5') && (lvl.includes('basic') || lvl.includes('primary') || lvl.includes('b5'))) return 'B5';
-    if (lvl.includes('6') && (lvl.includes('basic') || lvl.includes('primary') || lvl.includes('b6'))) return 'B6';
-    if (lvl.includes('kg 1') || lvl.includes('kg1') || lvl.includes('kindergarten 1')) return 'KG1';
-    if (lvl.includes('kg 2') || lvl.includes('kg2') || lvl.includes('kindergarten 2')) return 'KG2';
-    if (lvl.includes('nursery 1') || lvl.includes('n1')) return 'N1';
-    if (lvl.includes('nursery 2') || lvl.includes('n2')) return 'N2';
-    return 'B4';
+    const match = lvl.match(/(?:basic|primary|b)\s*([1-9])$/i);
+    if (match) return 'B' + match[1];
+    const jhs = lvl.match(/jhs\s*([1-3])$/i);
+    if (jhs) return 'B' + (Number(jhs[1]) + 6);
+    const kg = lvl.match(/(?:kg|kindergarten)\s*([12])$/i);
+    if (kg) return 'KG' + kg[1];
+    const nursery = lvl.match(/(?:nursery|n)\s*([12])$/i);
+    if (nursery) return 'N' + nursery[1];
+    return '';
   };
 
   const isBasicPrefix = (prefix: string) => /^B[1-9]$/.test(prefix);
 
-  // The important fix: filter the WHOLE hierarchy, not just the final
-  // Content Standard. A strand may contain multiple levels, and a sub-strand
-  // may also contain standards for different levels. We retain only branches
-  // containing an exact B1...B9 code for the selected class.
+  // A Basic-level record is valid ONLY when its curriculum codes belong to
+  // the selected level. Never fall back to another Basic level.
+  const hasExactBasicCode = (value: any, prefix: string) =>
+    !!value?.code && new RegExp('^' + prefix.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '\\.').test(String(value.code).trim().toUpperCase());
+
+  const filterSubStrandForLevel = (ss: any, classLevel: string) => {
+    if (!ss) return null;
+    const prefix = getLevelPrefix(classLevel);
+    if (!isBasicPrefix(prefix)) {
+      const levels = Array.isArray(ss.levels) ? ss.levels.map((v: any) => normalize(String(v))) : [];
+      if (levels.length && !levels.includes(normalize(classLevel))) return null;
+      return { ...ss };
+    }
+    const contentStandards = (ss.contentStandards || []).filter((cs: any) => hasExactBasicCode(cs, prefix));
+    return contentStandards.length ? { ...ss, contentStandards } : null;
+  };
+
   const getStrandsForLevel = (subjectData: any, classLevel: string) => {
     if (!subjectData) return [];
     const prefix = getLevelPrefix(classLevel);
     const strands = subjectData.strands || [];
 
     if (!isBasicPrefix(prefix)) {
-      return strands.filter((s: any) => {
+      return strands.map((s: any) => {
         const levels = Array.isArray(s.levels) ? s.levels.map((v: any) => normalize(String(v))) : [];
-        return levels.length === 0 || levels.includes(normalize(classLevel));
-      });
+        if (levels.length && !levels.includes(normalize(classLevel))) return null;
+        const subStrands = (s.subStrands || []).map((ss: any) => filterSubStrandForLevel(ss, classLevel)).filter(Boolean);
+        return subStrands.length ? { ...s, subStrands } : null;
+      }).filter(Boolean);
     }
 
-    const target = prefix + '.';
-    const filtered = strands.map((s: any) => {
-      const subStrands = (s.subStrands || []).map((ss: any) => {
-        const contentStandards = (ss.contentStandards || []).filter((cs: any) =>
-          normalize(String(cs?.code || '')).startsWith(normalize(target))
-        );
-        return contentStandards.length ? { ...ss, contentStandards } : null;
-      }).filter(Boolean);
-
-      if (!subStrands.length) return null;
-      return { ...s, subStrands };
+    // Filter every level of the hierarchy: strand -> sub-strand -> CS.
+    // Do NOT use strand IDs or a fallback list because names/IDs can repeat.
+    return strands.map((s: any) => {
+      const strandLevel = Array.isArray(s.levels) ? s.levels.map((v: any) => normalize(String(v))) : [];
+      if (strandLevel.length && !strandLevel.includes(normalize(classLevel))) return null;
+      const subStrands = (s.subStrands || []).map((ss: any) => filterSubStrandForLevel(ss, classLevel)).filter(Boolean);
+      return subStrands.length ? { ...s, subStrands } : null;
     }).filter(Boolean);
-
-    // For the official Primary/JHS datasets, Bx codes are present. This
-    // fallback protects manually entered/custom curriculum records.
-    if (filtered.length) return filtered;
-
-    return strands.filter((s: any) => {
-      const levels = Array.isArray(s.levels) ? s.levels.map((v: any) => normalize(String(v))) : [];
-      return levels.includes(normalize(classLevel));
-    });
   };
 
   const getLevelContentStandards = (subStrand: any, classLevel: string) => {
     if (!subStrand) return [];
-    const all = subStrand.contentStandards || [];
     const prefix = getLevelPrefix(classLevel);
-
-    if (isBasicPrefix(prefix)) {
-      const matching = all.filter((cs: any) =>
-        normalize(String(cs?.code || '')).startsWith(normalize(prefix + '.'))
-      );
-      return matching.length ? matching : all;
-    }
-
-    return all;
+    const all = subStrand.contentStandards || [];
+    if (!isBasicPrefix(prefix)) return all;
+    return all.filter((cs: any) => hasExactBasicCode(cs, prefix));
   };
 
   const getBestCSForLevel = (subStrand: any, classLevel: string) => {
@@ -104,41 +94,31 @@ function curriculumLevelFix(): Plugin {
   };
 
   const selectedSubjectData = GHANA_CURRICULUM_DATA.find(s =>
-    normalize(s.name) === normalize(inputs.subject) ||
-    normalize(inputs.subject).includes(normalize(s.name)) ||
-    normalize(s.name).includes(normalize(inputs.subject))
+    normalize(s.name) === normalize(inputs.subject)
   ) || GHANA_CURRICULUM_DATA[0];
 
   const availableStrands = getStrandsForLevel(selectedSubjectData, inputs.classLevel);
 
   const selectedStrandData = availableStrands.find((s: any) =>
-    normalize(s.name) === normalize(inputs.strand) ||
-    normalize(inputs.strand).includes(normalize(s.name)) ||
-    normalize(s.name).includes(normalize(inputs.strand))
+    normalize(s.name) === normalize(inputs.strand)
   ) || availableStrands[0];
 
   const availableSubStrands = selectedStrandData ? selectedStrandData.subStrands : [];
 
   const selectedSubStrandData = availableSubStrands.find((ss: any) =>
-    normalize(ss.name) === normalize(inputs.subStrand) ||
-    normalize(inputs.subStrand).includes(normalize(ss.name)) ||
-    normalize(ss.name).includes(normalize(inputs.subStrand))
+    normalize(ss.name) === normalize(inputs.subStrand)
   ) || availableSubStrands[0];
 
   const availableContentStandards = getLevelContentStandards(selectedSubStrandData, inputs.classLevel);
 
   const selectedCSData = availableContentStandards.find((cs: any) =>
-    normalize(inputs.contentStandard).startsWith(normalize(cs.code)) ||
-    normalize(cs.code) === normalize(inputs.contentStandard) ||
-    normalize(inputs.contentStandard).includes(normalize(cs.code))
-  ) || getBestCSForLevel(selectedSubStrandData, inputs.classLevel) || availableContentStandards[0];
+    normalize(inputs.contentStandard).startsWith(normalize(cs.code))
+  ) || availableContentStandards[0];
 
   const availableIndicators = selectedCSData ? selectedCSData.indicators : [];
 
   const selectedIndData = availableIndicators.find((ind: any) =>
-    normalize(inputs.indicator).startsWith(normalize(ind.code)) ||
-    normalize(ind.code) === normalize(inputs.indicator) ||
-    normalize(inputs.indicator).includes(normalize(ind.code))
+    normalize(inputs.indicator).startsWith(normalize(ind.code))
   ) || availableIndicators[0];
 
   const handleSubjectChange = (subjectName: string) => {
@@ -194,15 +174,13 @@ function curriculumLevelFix(): Plugin {
   };
 
   const handleCSChange = (csCode: string) => {
-    const csData = availableContentStandards.find((cs: any) =>
-      normalize(cs.code) === normalize(csCode) || normalize(csCode).startsWith(normalize(cs.code))
-    );
+    const csData = availableContentStandards.find((cs: any) => normalize(cs.code) === normalize(csCode));
     const firstInd = csData?.indicators?.[0];
     const autoRef = getNaCCACurriculumReference(inputs.subject, inputs.classLevel, inputs.strand, inputs.subStrand, firstInd?.code || '');
 
     setInputs(prev => ({
       ...prev,
-      contentStandard: csData ? csData.code + ': ' + csData.description : csCode,
+      contentStandard: csData ? csData.code + ': ' + csData.description : '',
       indicator: firstInd ? firstInd.code + ': ' + firstInd.description : '',
       references: autoRef
     }));
@@ -211,10 +189,9 @@ function curriculumLevelFix(): Plugin {
   const handleIndicatorChange = (indCode: string) => {
     let foundInd: any = null;
     let foundCS: any = null;
-
     for (const cs of availableContentStandards) {
       for (const ind of cs.indicators || []) {
-        if (normalize(ind.code) === normalize(indCode) || normalize(indCode).startsWith(normalize(ind.code))) {
+        if (normalize(ind.code) === normalize(indCode)) {
           foundInd = ind;
           foundCS = cs;
           break;
@@ -223,9 +200,9 @@ function curriculumLevelFix(): Plugin {
       if (foundInd) break;
     }
 
-    const indData = foundInd || availableIndicators.find((ind: any) => ind.code === indCode);
+    const indData = foundInd || availableIndicators.find((ind: any) => normalize(ind.code) === normalize(indCode));
     const csData = foundCS || selectedCSData;
-    const autoRef = getNaCCACurriculumReference(inputs.subject, inputs.classLevel, inputs.strand, inputs.subStrand, indData ? indData.code : indCode);
+    const autoRef = getNaCCACurriculumReference(inputs.subject, inputs.classLevel, inputs.strand, inputs.subStrand, indData?.code || indCode);
 
     setInputs(prev => ({
       ...prev,
@@ -239,8 +216,7 @@ function curriculumLevelFix(): Plugin {
     const subjData = GHANA_CURRICULUM_DATA.find(s => normalize(s.name) === normalize(inputs.subject)) || GHANA_CURRICULUM_DATA[0];
     const levelStrands = getStrandsForLevel(subjData, newLevel);
     const newStrand = levelStrands[0];
-    const subStrands = newStrand?.subStrands || [];
-    const newSubStrand = subStrands[0];
+    const newSubStrand = newStrand?.subStrands?.[0];
     const bestCS = getBestCSForLevel(newSubStrand, newLevel);
     const firstInd = bestCS?.indicators?.[0];
     const autoRef = getNaCCACurriculumReference(inputs.subject, newLevel, newStrand?.name || '', newSubStrand?.name || '', firstInd?.code || '');
