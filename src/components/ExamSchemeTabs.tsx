@@ -540,7 +540,7 @@ export function generateExam(rawInputs: ExamInputs): ExamPaper {
     strand: str(rawInputs?.strand, ''),
     subStrand: str(rawInputs?.subStrand, ''),
     indicatorCodes: Array.isArray(rawInputs?.indicatorCodes) ? rawInputs.indicatorCodes.filter(c => typeof c === 'string' && c) : [],
-    mcqCount: num(rawInputs?.mcqCount, 30, 5, 50),
+    mcqCount: num(rawInputs?.mcqCount, 40, 5, 50),
     theoryCount: num(rawInputs?.theoryCount, 5, 1, 10),
     schoolName: str(rawInputs?.schoolName, 'Adom Basic School'),
     examTitle: str(rawInputs?.examTitle, 'END OF TERM EXAMINATION'),
