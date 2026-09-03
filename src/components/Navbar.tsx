@@ -78,7 +78,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {/* License Tier Badge / Upgrade Button */}
             {(() => {
               const used = activeLicense.generatedWeeks ? activeLicense.generatedWeeks.length : (activeLicense.generationsUsed || 0);
-              const max = activeLicense.maxWeeks || (activeLicense.tier === 'Premium License' ? 12 : activeLicense.tier === 'Pro License' ? 6 : 1);
+              const max = activeLicense.maxWeeks || (activeLicense.tier === 'Premium License' ? 16 : activeLicense.tier === 'Pro License' ? 6 : 1);
               const isLimit = used >= max;
               return (
                 <button
