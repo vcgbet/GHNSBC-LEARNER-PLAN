@@ -32,16 +32,67 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", hasApiKey: Boolean(process.env.GEMINI_API_KEY) });
 });
 
-// Model retry slots: the primary model periodically returns 503 UNAVAILABLE
-// ("high demand"). Strategy: fail fast to the backup model (separate capacity
-// pool), then wait and retry both, since demand spikes usually clear within
-// a minute or two.
-const AI_SLOTS: Array<{ model: string; delayMs: number }> = [
-  { model: "gemini-3.6-flash", delayMs: 0 },
-  { model: "gemini-2.5-flash", delayMs: 0 },
-  { model: "gemini-3.6-flash", delayMs: 20000 },
-  { model: "gemini-2.5-flash", delayMs: 45000 }
+// Model retry strategy: the primary model periodically returns 503
+// UNAVAILABLE ("high demand"), and models get deprecated over time
+// (e.g. gemini-2.5-flash → 404 "no longer available to new users").
+// So instead of hardcoding a chain, the server auto-discovers which
+// models THIS API key can actually use (cached), and remembers any
+// model that 404s so it is never called again.
+const MODEL_PREFERENCE = [
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.1-flash",
+  "gemini-3-flash-preview",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite"
 ];
+const DEAD_MODELS = new Set<string>();
+let modelsPromise: Promise<string[] | null> | null = null;
+
+function getAvailableModels(): Promise<string[] | null> {
+  if (!modelsPromise) {
+    modelsPromise = (async () => {
+      if (!ai) return null;
+      try {
+        const page: any = await (ai as any).models.list();
+        const names: string[] = (page?.models || [])
+          .map((m: any) => String(m?.name || "").replace(/^models\//, ""))
+          .filter(Boolean);
+        console.log("[AI] Models available to this key:", names.join(", "));
+        return names;
+      } catch (e: any) {
+        console.warn("[AI] models.list() failed:", String(e?.message || e).slice(0, 200));
+        return null;
+      }
+    })();
+  }
+  return modelsPromise;
+}
+
+async function getAiSlots(): Promise<Array<{ model: string; delayMs: number }>> {
+  const available = await getAvailableModels();
+  let pool: string[];
+  if (available) {
+    const usable = available.filter(m => !DEAD_MODELS.has(m) && /flash/i.test(m));
+    pool = [
+      ...MODEL_PREFERENCE.filter(m => usable.includes(m)),
+      ...usable.filter(m => !MODEL_PREFERENCE.includes(m))
+    ];
+  } else {
+    pool = MODEL_PREFERENCE.filter(m => !DEAD_MODELS.has(m));
+  }
+  if (pool.length === 0) pool = ["gemini-3.6-flash"];
+  const primary = pool[0];
+  const secondary = pool[1] || pool[0];
+  return [
+    { model: primary, delayMs: 0 },
+    { model: secondary, delayMs: 0 },
+    { model: primary, delayMs: 20000 },
+    { model: secondary, delayMs: 45000 }
+  ];
+}
 
 // Shared LESSON PARAMETERS block used by every AI call.
 function buildLessonParams(inputs: PlanFormInputs): string {
@@ -92,7 +143,8 @@ app.post("/api/generate-plan", async (req, res) => {
   // ------------------------------------------------------------------
   const callGeminiJson = async (contents: string, config: any, label: string): Promise<any> => {
     let lastErr: any = null;
-    for (const slot of AI_SLOTS) {
+    const slots = await getAiSlots();
+    for (const slot of slots) {
       if (slot.delayMs > 0) await new Promise(r => setTimeout(r, slot.delayMs));
       for (let sample = 1; sample <= 2; sample++) {
         try {
@@ -115,10 +167,16 @@ app.post("/api/generate-plan", async (req, res) => {
           const code = String(e?.code ?? e?.status ?? '');
           const msg = String(e?.message ?? e);
           console.warn(`[AI:${label}] model=${slot.model} sample=${sample} failed: code=${code} ${msg.slice(0, 250)}`);
+          // Model no longer exists for this key → remember it, try next slot.
+          const deadModel = /404|not_found|no longer available/i.test(`${code} ${msg}`) && /model/i.test(msg);
+          if (deadModel) {
+            DEAD_MODELS.add(slot.model);
+            console.warn(`[AI] Marking model ${slot.model} as unavailable for this key.`);
+          }
           const transient = /429|500|502|503|unavailable|resource_exhausted|quota|rate ?limit|deadline|timeout|socket/i
             .test(`${code} ${msg}`);
-          if (!transient) throw e; // auth / invalid request — do not retry
-          break; // transient API error — next slot (its delay applies)
+          if (!transient && !deadModel) throw e; // auth / invalid request — do not retry
+          break; // transient API error or dead model — next slot (its delay applies)
         }
       }
     }
@@ -418,8 +476,16 @@ e) diagram: 10 items. Tailored strictly to class level:
 
   const buildAiPlan = async (): Promise<LearnerPlanOutput> => {
     // One core call + one call per day — all in parallel.
+    // If the CORE call fails after exhausting every retry, it throws and
+    // the outer catch serves the full offline plan (with aiError shown).
+    // If a single DAY's exercise bank fails, only that day's exercises
+    // fall back to the offline engine (via backfillExercises below); the
+    // AI core and all other days are kept.
     const dayCallPromises = Array.from({ length: days }, (_, i) =>
-      callGeminiJson(dayPrompt(i + 1), dayConfig, `exercises-day${i + 1}`)
+      callGeminiJson(dayPrompt(i + 1), dayConfig, `exercises-day${i + 1}`).catch((e: any) => {
+        console.error(`[AI] exercises-day${i + 1} exhausted all retries — that day's exercises will come from the offline engine:`, String(e?.message || e).slice(0, 250));
+        return null;
+      })
     );
     const [coreData, ...dayParts] = await Promise.all([
       callGeminiJson(corePrompt, coreConfig, "core-plan"),
@@ -516,6 +582,7 @@ e) diagram: 10 items. Tailored strictly to class level:
         summary: `Review notes regularly.`
       },
       exercises,
+      ...(dayParts.some(d => d == null) ? { aiPartial: true } : {}),
       dailyPlans: (coreData?.dailyPlans && coreData.dailyPlans.length > 0) ? coreData.dailyPlans : undefined,
       generationMode: 'AI'
     } as LearnerPlanOutput;
