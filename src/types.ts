@@ -230,3 +230,107 @@ export interface ExtractedSchemeDetails {
   classSize?: number;
   additionalNotes?: string;
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// End-of-Term Examination Generator
+// ─────────────────────────────────────────────────────────────────────────
+export interface ExamObjectiveQuestion {
+  number: number;
+  question: string;
+  options: { A: string; B: string; C: string; D: string };
+  marks: number;
+  indicatorCode?: string;
+}
+
+export interface ExamObjectiveAnswer {
+  number: number;
+  answer: 'A' | 'B' | 'C' | 'D';
+  explanation?: string;
+}
+
+export interface ExamTheoryPart {
+  label: string; // "(a)", "(b)", ...
+  text: string;
+  marks: number;
+}
+
+export interface ExamTheoryQuestion {
+  number: number;
+  question: string;
+  parts: ExamTheoryPart[];
+  totalMarks: number;
+  indicatorCode?: string;
+}
+
+export interface ExamTheoryAnswer {
+  number: number;
+  parts: { label: string; answer: string; marks: number }[];
+  totalMarks: number;
+}
+
+export interface ExamPaper {
+  id: string;
+  createdAt: string;
+  meta: {
+    schoolName: string;
+    examTitle: string;
+    term: string;
+    subject: string;
+    classLevel: string;
+    duration: string;
+    totalMarks: number;
+  };
+  instructions: string[];
+  objective: {
+    sectionTitle: string;
+    instruction: string;
+    totalMarks: number;
+    questions: ExamObjectiveQuestion[];
+  };
+  theory: {
+    sectionTitle: string;
+    instruction: string;
+    totalMarks: number;
+    questions: ExamTheoryQuestion[];
+  };
+  markScheme: {
+    objectiveAnswers: ExamObjectiveAnswer[];
+    theoryAnswers: ExamTheoryAnswer[];
+  };
+  coverage: string[]; // indicator codes examined
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Scheme of Learning Generator
+// ─────────────────────────────────────────────────────────────────────────
+export interface SchemeRow {
+  week: number;
+  date: string; // "14/09/2026"
+  day: string; // "Monday"
+  strand: string;
+  subStrand: string;
+  contentStandard: string; // "B8.1.1.1"
+  indicator: string; // "B8.1.1.1.1"
+  performanceIndicator: string; // "Learner can: ..."
+  tlms: string[];
+  type: 'lesson' | 'revision' | 'examination';
+}
+
+export interface SchemeTerm {
+  id: string;
+  createdAt: string;
+  meta: {
+    schoolName: string;
+    subject: string;
+    classLevel: string;
+    term: string; // "First Term 2026/2027"
+    termStart: string; // ISO date
+    lessonsPerWeek: number;
+    lessonDays: string[];
+    teacherName: string;
+    headName: string;
+    totalWeeks: number;
+    totalLessons: number;
+  };
+  rows: SchemeRow[];
+}
