@@ -42,7 +42,7 @@ export const LicenseModal: React.FC<LicenseModalProps> = ({
         tier: res.tier,
         key: inputKey.trim().toUpperCase(),
         activatedAt: new Date().toISOString(),
-        maxWeeks: res.tier === 'Premium License' ? 12 : 6,
+        maxWeeks: res.tier === 'Premium License' ? 16 : 6,
         generationsUsed: 0
       };
       saveLicense(updated);
