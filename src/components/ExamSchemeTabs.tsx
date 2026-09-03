@@ -966,7 +966,7 @@ export const ExamGenerator: React.FC<ExamGeneratorProps> = () => {
   const [strand, setStrand] = useState('');
   const [subStrand, setSubStrand] = useState('');
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
-  const [mcqCount, setMcqCount] = useState(30);
+  const [mcqCount, setMcqCount] = useState(40);
   const [theoryCount, setTheoryCount] = useState(5);
   const [schoolName, setSchoolName] = useState('Adom Basic School');
   const [examTitle, setExamTitle] = useState('END OF TERM EXAMINATION');
