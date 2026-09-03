@@ -38,6 +38,12 @@ export const LicenseModal: React.FC<LicenseModalProps> = ({
 
     const res = validateLicenseKey(inputKey);
     if (res.valid && res.tier) {
+      const enteredKey = inputKey.trim().toUpperCase();
+      const currentKey = (activeLicense.key || '').trim().toUpperCase();
+      if (currentKey && enteredKey === currentKey) {
+        setStatusMsg({ type: 'error', text: 'This key is already active on this device. Please purchase a NEW license key to continue generating new Week Ending dates.' });
+        return;
+      }
       const updated: LicenseInfo = {
         tier: res.tier,
         key: inputKey.trim().toUpperCase(),
