@@ -1,10 +1,10 @@
 import React from 'react';
-import { BookOpen, Sparkles, Wifi, WifiOff, FolderKanban, Compass, Key, Crown, Zap, Phone } from 'lucide-react';
+import { BookOpen, Sparkles, Wifi, WifiOff, FolderKanban, Compass, Key, Crown, Zap, Phone, ClipboardList, CalendarRange } from 'lucide-react';
 import { LicenseInfo } from '../utils/licenseManager';
 
 interface NavbarProps {
-  activeTab: 'generator' | 'saved' | 'curriculum';
-  setActiveTab: (tab: 'generator' | 'saved' | 'curriculum') => void;
+  activeTab: 'generator' | 'saved' | 'curriculum' | 'exam' | 'scheme';
+  setActiveTab: (tab: 'generator' | 'saved' | 'curriculum' | 'exam' | 'scheme') => void;
   savedCount: number;
   isOnline: boolean;
   activeLicense: LicenseInfo;
@@ -109,7 +109,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             })()}
 
             {/* Nav Tabs */}
-            <nav id="navigation-tabs" className="flex items-center bg-blue-950/80 p-1 rounded-xl border border-blue-800/60 shadow-inner">
+            <nav id="navigation-tabs" className="flex items-center bg-blue-950/80 p-1 rounded-xl border border-blue-800/60 shadow-inner flex-wrap gap-0.5">
               <button
                 id="btn-nav-generator"
                 onClick={() => setActiveTab('generator')}
@@ -153,6 +153,32 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <Compass className="w-3.5 h-3.5 text-emerald-300" />
                 <span>Syllabus Guide</span>
               </button>
+
+              <button
+                id="btn-nav-exam"
+                onClick={() => setActiveTab('exam')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  activeTab === 'exam'
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'text-blue-200 hover:text-white hover:bg-blue-900/50'
+                }`}
+              >
+                <ClipboardList className="w-3.5 h-3.5 text-amber-300" />
+                <span>Exam Paper</span>
+              </button>
+
+              <button
+                id="btn-nav-scheme"
+                onClick={() => setActiveTab('scheme')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  activeTab === 'scheme'
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'text-blue-200 hover:text-white hover:bg-blue-900/50'
+                }`}
+              >
+                <CalendarRange className="w-3.5 h-3.5 text-cyan-300" />
+                <span>Scheme of Learning</span>
+              </button>
             </nav>
 
             {/* Offline Status Badge */}
@@ -164,7 +190,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </>
               ) : (
                 <>
-                  <WifiOff className="w-3.5 h-3.5 text-amber-400" />
+                  <WifiOff className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
                   <span className="text-amber-300 font-medium text-[11px]">Offline Engine Active</span>
                 </>
               )}
@@ -177,4 +203,3 @@ export const Navbar: React.FC<NavbarProps> = ({
     </header>
   );
 };
-
