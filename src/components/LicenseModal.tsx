@@ -213,7 +213,7 @@ export const LicenseModal: React.FC<LicenseModalProps> = ({
                   <Zap className="w-3.5 h-3.5 text-blue-400" />
                   2. Pro License
                 </span>
-                <span className="text-xs font-bold text-yellow-400">GHC 50</span>
+                <span className="text-xs font-bold text-yellow-400">GHC 100</span>
               </div>
               <div className="text-lg font-bold text-white mb-1">6 Weeks</div>
               <p className="text-[11px] text-slate-300 leading-relaxed mb-3">
