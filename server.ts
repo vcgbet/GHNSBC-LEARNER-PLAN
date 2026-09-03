@@ -4,6 +4,7 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import { PlanFormInputs, LearnerPlanOutput } from "./src/types";
 import { generateOfflinePlan } from "./src/utils/offlineGenerator";
+import { sanitizeAiPlan, backfillExercises } from "./src/utils/aiPlanGuard";
 import { getAutoCoreCompetencies } from "./src/utils/coreCompetencies";
 import { parseSchemeText } from "./src/utils/schemeParser";
 import { getNaCCACurriculumReference } from "./src/utils/naccaReferences";
@@ -95,10 +96,31 @@ REQUIREMENTS:
         - For Early Years & Lower Primary (Nursery, KG1, KG2, Basic 1, Basic 2, Basic 3): Questions asking learners to identify pictures (e.g. animals, community tools, Ghanaian symbols, fruits), label simple diagrams, trace dotted line diagrams/shapes, trace letters/words, and draw illustrations.
         - For Upper Primary & JHS (Basic 4 to Basic 9): Questions asking learners to identify subject diagrams, label structures (e.g. plant/human organs, maps, computer components, geometric nets, place value charts), and complete visual tasks.
         - Tagged with dayNumber, exerciseNumber (1 or 2), questionNumber (1 to 5), diagramCategory, diagramTitle, diagramPrompt, diagramAsciiOrDescription, question, and expectedAnswer. Total: ${(inputs.numberOfDays || 1) * 10} items.
+11. STYLE & COMPLETENESS:
+   - Write EVERY text field as clean, natural, concise prose (1-3 sentences). Never repeat the same word or phrase. Never output instructions, formatting notes, JSON comments, or any meta text about how you are generating the plan.
+   - Questions must be about the lesson CONTENT (the indicator), never about the plan's own structure (strands, sub-strands, content standards, performance indicators). Refer to the topic by its plain name.
+   - You MUST produce all five exercise tiers (A-E) for EVERY day, with no missing sections, even for later days.
 `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+    const aiClient = ai;
+    // Retry ladder, tuned for the observed failure mode: 503 UNAVAILABLE
+    // "This model is currently experiencing high demand" on the primary
+    // model. Strategy: fail fast to the backup model (it has a separate
+    // capacity pool), then wait and retry both, since demand spikes
+    // usually clear within a minute or two.
+    const AI_ATTEMPTS: Array<{ model: string; delayMs: number }> = [
+      { model: "gemini-3.6-flash", delayMs: 0 },
+      { model: "gemini-2.5-flash", delayMs: 0 },
+      { model: "gemini-3.6-flash", delayMs: 20000 },
+      { model: "gemini-2.5-flash", delayMs: 45000 }
+    ];
+    const buildAiPlan = async (): Promise<LearnerPlanOutput> => {
+    let lastErr: any = null;
+    for (const step of AI_ATTEMPTS) {
+      if (step.delayMs > 0) await new Promise(r => setTimeout(r, step.delayMs));
+      try {
+          const response = await aiClient.models.generateContent({
+      model: step.model,
       contents: prompt,
       config: {
         systemInstruction: "You are a NaCCA Ghana Curriculum Master Specialist. Return strict, valid JSON matching the schema for a Ghana Standard-Based Curriculum Lesson Plan and Notes.",
@@ -420,12 +442,62 @@ REQUIREMENTS:
       dailyPlans: (parsedData.dailyPlans && parsedData.dailyPlans.length > 0) ? parsedData.dailyPlans : undefined,
       generationMode: 'AI'
     };
+    return fullPlan;
+        } catch (e: any) {
+          lastErr = e;
+          const code = String(e?.code ?? e?.status ?? '');
+          const msg = String(e?.message ?? e);
+          console.warn(`[AI] model=${step.model} failed: code=${code} ${msg.slice(0, 400)}`);
+          // Non-transient errors (auth, invalid request, malformed schema)
+          // are not worth retrying — stop the ladder immediately.
+          const transient = /429|500|502|503|unavailable|resource_exhausted|quota|rate ?limit|deadline|timeout|socket/i
+            .test(`${code} ${msg}`);
+          if (!transient) break;
+        }
+      }
+    throw lastErr || new Error('All AI models failed');
+    };
 
-    return res.json(fullPlan);
+    let plan = await buildAiPlan();
+
+    // Guard against degenerated LLM output (repetition loops that sometimes
+    // regurgitate prompt fragments): scrub bad fields, retry once if needed.
+    const first = sanitizeAiPlan(plan);
+    if (first.changed) {
+      console.warn("AI plan contained degenerated text - retrying generation once.");
+      let retryPlan: LearnerPlanOutput | null = null;
+      try {
+        retryPlan = await buildAiPlan();
+      } catch (retryErr) {
+        console.warn("AI retry failed; using sanitized plan.", retryErr);
+      }
+      if (retryPlan) {
+        const second = sanitizeAiPlan(retryPlan);
+        plan = second.changed ? first.plan : retryPlan;
+        if (second.changed) console.warn("Retry also contained degenerated text - using sanitized plan.");
+      } else {
+        plan = first.plan;
+      }
+    }
+
+    // Guarantee a structurally complete plan: any missing day/section is
+    // filled from the deterministic offline engine (same indicator).
+    const finalPlan = backfillExercises(plan, generateOfflinePlan(inputs));
+    return res.json(finalPlan);
   } catch (err: any) {
-    console.error("Gemini AI plan generation failed, falling back to offline engine:", err);
+    const errMsg = String(err?.message || err || 'unknown AI error');
+    const errCode = String(err?.code || err?.status || '');
+    console.error(`Gemini AI plan generation failed (code=${errCode}), falling back to offline engine:`, errMsg);
     const offlinePlan = generateOfflinePlan(inputs);
-    return res.json(offlinePlan);
+    // aiFailed/aiError are surfaced to the client so the UI can tell the
+    // teacher exactly why the offline engine was used.
+    return res.json({
+      ...offlinePlan,
+      generationMode: 'Offline Engine',
+      aiFailed: true,
+      aiError: errMsg,
+      aiErrorCode: errCode
+    });
   }
 });
 
