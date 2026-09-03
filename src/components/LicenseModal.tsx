@@ -23,7 +23,7 @@ export const LicenseModal: React.FC<LicenseModalProps> = ({
 
   const generatedWeeksList = activeLicense.generatedWeeks || [];
   const usedCount = generatedWeeksList.length > 0 ? generatedWeeksList.length : (activeLicense.generationsUsed || 0);
-  const maxWeeks = activeLicense.maxWeeks || (activeLicense.tier === 'Premium License' ? 12 : activeLicense.tier === 'Pro License' ? 6 : 1);
+  const maxWeeks = activeLicense.maxWeeks || (activeLicense.tier === 'Premium License' ? 16 : activeLicense.tier === 'Pro License' ? 6 : 1);
   const isLimitReached = usedCount >= maxWeeks;
 
   if (!isOpen) return null;
