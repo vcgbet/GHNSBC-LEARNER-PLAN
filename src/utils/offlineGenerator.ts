@@ -369,7 +369,7 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
   };
 }
 
-function getTermDefinition(term: string, subject: string, topic: string, index: number, exemplarText: string = ''): string {
+export function getTermDefinition(term: string, subject: string, topic: string, index: number, exemplarText: string = ''): string {
   const definitions: Record<string, string> = {
     // History Terms
     'History': 'The study and systematic recording of past human events, achievements, and developments.',
@@ -493,9 +493,9 @@ function getTermDefinition(term: string, subject: string, topic: string, index: 
 // deterministic (no Math.random) so repeated generations are stable.
 // ─────────────────────────────────────────────────────────────────────────
 
-const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-function splitSentences(text: string): string[] {
+export function splitSentences(text: string): string[] {
   if (!text) return [];
   const norm = text.replace(/\s+/g, ' ').trim();
   const parts = norm.split(/(?<=[.!?])\s+/);
@@ -517,9 +517,9 @@ function splitSentences(text: string): string[] {
   return out;
 }
 
-interface ClozeSpan { sentence: string; blanked: string; answer: string; }
+export interface ClozeSpan { sentence: string; blanked: string; answer: string; }
 
-function findClozeSpan(sentence: string, terms: string[]): ClozeSpan | null {
+export function findClozeSpan(sentence: string, terms: string[]): ClozeSpan | null {
   // Prefer a substantial number (with or without a unit word).
   const matches = [...sentence.matchAll(/(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(\s*(?:billion|million|thousand|percent|degrees?))?/g)];
   matches.sort((a, b) => b[0].length - a[0].length);
@@ -546,7 +546,7 @@ function findClozeSpan(sentence: string, terms: string[]): ClozeSpan | null {
   return null;
 }
 
-function numberDistractors(answer: string): string[] {
+export function numberDistractors(answer: string): string[] {
   const m = answer.match(/(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)/);
   if (!m) return [];
   const numPart = m[1];
@@ -568,7 +568,7 @@ function numberDistractors(answer: string): string[] {
   return Array.from(out).slice(0, 3).map(s => (unit ? `${s} ${unit}` : s));
 }
 
-function termDistractors(answer: string, terms: string[]): string[] {
+export function termDistractors(answer: string, terms: string[]): string[] {
   const out: string[] = [];
   // Morphological twins (liquids/Liquid) are not valid distractors.
   const stem = answer.toLowerCase().replace(/s$/, '');
@@ -617,7 +617,7 @@ const SUBJECT_TERM_SCANS: Record<string, string[]> = {
   generic: ['Concept', 'Principle', 'Method', 'Procedure', 'System', 'Process', 'Feature', 'Element', 'Component', 'Structure', 'Function', 'Application', 'Analysis', 'Evaluation', 'Strategy', 'Technique', 'Tool', 'Skill', 'Knowledge', 'Understanding']
 };
 
-function extractKeyTerms(subject: string, text: string): string[] {
+export function extractKeyTerms(subject: string, text: string): string[] {
   if (!text) return [];
   const s = (subject || '').toLowerCase();
   const lists: string[][] = [];
@@ -645,7 +645,7 @@ function extractKeyTerms(subject: string, text: string): string[] {
 // Derive a definition from the curriculum text: only accept a whole
 // sentence that STARTS with the term (otherwise the capture is just a
 // mid-sentence fragment, not a definition).
-function deriveDefinitionFromText(term: string, text: string): string | null {
+export function deriveDefinitionFromText(term: string, text: string): string | null {
   if (!term || !text) return null;
   for (const s of splitSentences(text)) {
     let t = s.replace(/^(the|a|an)\s+/i, '');
@@ -658,7 +658,7 @@ function deriveDefinitionFromText(term: string, text: string): string | null {
   return null;
 }
 
-const isCircularDefinition = (d: string) => /^Key subject terminology in .+ representing ".*" as studied under/.test(d);
+export const isCircularDefinition = (d: string) => /^Key subject terminology in .+ representing ".*" as studied under/.test(d);
 
 function findChartNumber(text: string): string | null {
   if (!text) return null;
