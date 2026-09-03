@@ -19,7 +19,7 @@ export const TIER_LIMITS: Record<LicenseTier, { maxWeeks: number; price: string;
   },
   'Pro License': {
     maxWeeks: 6,
-    price: 'GHC 50',
+    price: 'GHC 100',
     description: 'Generates Learner Plans for up to 6 distinct Week Ending dates',
     badgeColor: 'bg-blue-600 text-white border-blue-400'
   },
@@ -126,9 +126,9 @@ export function checkLicenseCanGenerate(weekEndingInput?: string): { allowed: bo
 
     if (lic.tier === 'Free Trial') {
       const activeWeekStr = existingWeeks[0] ? `"${existingWeeks[0]}"` : 'a previous date';
-      reason = `Free Trial Limit Reached! Your 1-week Free Trial has already been used for ${activeWeekStr}. Unlimited re-generations for ${activeWeekStr} are allowed, but generating for a new Week Ending date ("${displayWeek}") requires an upgrade. Please upgrade to Pro License (GHC 50 - up to 6 weeks) or Premium License (GHC 150 - Whole Term).`;
+      reason = `Free Trial Limit Reached! Your 1-week Free Trial has already been used for ${activeWeekStr}. Unlimited re-generations for ${activeWeekStr} are allowed, but generating for a new Week Ending date ("${displayWeek}") requires an upgrade. Please upgrade to Pro License (GHC 100 - up to 6 weeks) or Premium License (GHC 150 - Whole Term).`;
     } else if (lic.tier === 'Pro License') {
-      reason = `Pro License Limit Reached! You have generated plans for ${max} distinct Week Ending dates under your Pro License (GHC 50). To generate plans for an additional Week Ending date ("${displayWeek}"), please upgrade to Premium License (GHC 150 - Whole Term) or activate a new license key.`;
+      reason = `Pro License Limit Reached! You have generated plans for ${max} distinct Week Ending dates under your Pro License (GHC 100). To generate plans for an additional Week Ending date ("${displayWeek}"), please upgrade to Premium License (GHC 150 - Whole Term) or activate a new license key.`;
     } else {
       reason = `Premium License Term Limit Reached! You have generated plans for all ${max} distinct Week Ending dates allowed for the term under your Premium License (GHC 150). For a new term extension or key, please contact Victor C. Gbetodeme.`;
     }
@@ -181,7 +181,7 @@ export function validateLicenseKey(rawKey: string): { valid: boolean; tier?: Lic
 
   // Standard predefined keys for convenience
   if (key === 'PRO-50-VICTOR' || key === 'PRO50-VICTOR') {
-    return { valid: true, tier: 'Pro License', message: 'Successfully activated Pro License (6 Weeks - GHC 50)!' };
+    return { valid: true, tier: 'Pro License', message: 'Successfully activated Pro License (6 Weeks - GHC 100)!' };
   }
   if (key === 'PREM-150-VICTOR' || key === 'PREM150-VICTOR' || key === 'PREMIUM-150-VICTOR') {
     return { valid: true, tier: 'Premium License', message: 'Successfully activated Premium License (Whole Term - GHC 150)!' };
@@ -203,7 +203,7 @@ export function validateLicenseKey(rawKey: string): { valid: boolean; tier?: Lic
   }
 
   if (prefix === 'PRO50') {
-    return { valid: true, tier: 'Pro License', message: 'Successfully activated Pro License (6 Weeks - GHC 50)!' };
+    return { valid: true, tier: 'Pro License', message: 'Successfully activated Pro License (6 Weeks - GHC 100)!' };
   } else if (prefix === 'PREM150') {
     return { valid: true, tier: 'Premium License', message: 'Successfully activated Premium License (Whole Term - GHC 150)!' };
   }
