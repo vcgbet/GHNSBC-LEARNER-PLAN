@@ -4,6 +4,8 @@ import { FormInput } from './components/FormInput';
 import { PlanViewer } from './components/PlanViewer';
 import { SavedPlans } from './components/SavedPlans';
 import { CurriculumBrowser } from './components/CurriculumBrowser';
+import { ExamGenerator } from './components/ExamGenerator';
+import { SchemeGenerator } from './components/SchemeGenerator';
 import { DeveloperModal } from './components/DeveloperModal';
 import { LicenseGeneratorModal } from './components/LicenseGeneratorModal';
 import { LicenseModal } from './components/LicenseModal';
@@ -13,7 +15,7 @@ import { getActiveLicense, checkLicenseCanGenerate, recordLicenseGeneration, Lic
 import { BookOpen, Sparkles, AlertCircle, RefreshCw, Phone } from 'lucide-react';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'generator' | 'saved' | 'curriculum'>('generator');
+  const [activeTab, setActiveTab] = useState<'generator' | 'saved' | 'curriculum' | 'exam' | 'scheme'>('generator');
   const [currentPlan, setCurrentPlan] = useState<LearnerPlanOutput | null>(null);
   const [savedPlans, setSavedPlans] = useState<LearnerPlanOutput[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -223,6 +225,14 @@ export default function App() {
 
         {activeTab === 'curriculum' && (
           <CurriculumBrowser />
+        )}
+
+        {activeTab === 'exam' && (
+          <ExamGenerator />
+        )}
+
+        {activeTab === 'scheme' && (
+          <SchemeGenerator />
         )}
 
       </main>
