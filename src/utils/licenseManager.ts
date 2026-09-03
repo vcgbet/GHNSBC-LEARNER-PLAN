@@ -26,7 +26,7 @@ export const TIER_LIMITS: Record<LicenseTier, { maxWeeks: number; price: string;
   'Premium License': {
     maxWeeks: 16,
     price: 'GHC 150',
-    description: 'Generates Learner Plans for whole Term (12 distinct Week Ending dates)',
+    description: 'Generates Learner Plans for whole Term (16 distinct Week Ending dates)',
     badgeColor: 'bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-950 font-bold border-yellow-300'
   }
 };
