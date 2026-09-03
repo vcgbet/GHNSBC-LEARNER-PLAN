@@ -32,6 +32,40 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", hasApiKey: Boolean(process.env.GEMINI_API_KEY) });
 });
 
+// Model retry slots: the primary model periodically returns 503 UNAVAILABLE
+// ("high demand"). Strategy: fail fast to the backup model (separate capacity
+// pool), then wait and retry both, since demand spikes usually clear within
+// a minute or two.
+const AI_SLOTS: Array<{ model: string; delayMs: number }> = [
+  { model: "gemini-3.6-flash", delayMs: 0 },
+  { model: "gemini-2.5-flash", delayMs: 0 },
+  { model: "gemini-3.6-flash", delayMs: 20000 },
+  { model: "gemini-2.5-flash", delayMs: 45000 }
+];
+
+// Shared LESSON PARAMETERS block used by every AI call.
+function buildLessonParams(inputs: PlanFormInputs): string {
+  return `LESSON PARAMETERS:
+- Week Ending: ${inputs.weekEnding || '16th October, 2026'}
+- School Name: ${inputs.schoolName || 'Adom Basic School'}
+- Teacher's Name: ${inputs.teacherName || 'Class Teacher'}
+- Class / Grade Level: ${inputs.classLevel || 'Basic 4'}
+- Subject: ${inputs.subject}
+- Strand: ${inputs.strand}
+- Sub-strand: ${inputs.subStrand}
+- Content Standard: ${inputs.contentStandard || 'B4.1.1.1'}
+- Indicator: ${inputs.indicator || 'B4.1.1.1.1'}
+- Class Size: ${inputs.classSize || 45} learners
+- Lesson Duration: ${inputs.duration || '60 Mins'}
+- Number of Days/Lessons: ${inputs.numberOfDays || 4}
+- Head of School / Headteacher: ${inputs.nameOfHead || 'Mr. Kwesi Mensah'}
+- Additional Instructions: ${inputs.additionalInstructions || 'Ensure authentic Ghanaian educational terminology and exercises.'}`;
+}
+
+const STYLE_RULES = `STYLE & COMPLETENESS:
+   - Write EVERY text field as clean, natural, concise prose (1-3 sentences). Never repeat the same word or phrase. Never output instructions, formatting notes, JSON comments, or any meta text about how you are generating the plan.
+   - Questions must be about the lesson CONTENT (the indicator), never about the plan's own structure (strands, sub-strands, content standards, performance indicators). Refer to the topic by its plain name.`;
+
 // Generate Plan API Endpoint
 app.post("/api/generate-plan", async (req, res) => {
   const inputs: PlanFormInputs = req.body;
@@ -48,31 +82,304 @@ app.post("/api/generate-plan", async (req, res) => {
     return res.json(offlinePlan);
   }
 
-  try {
-    const prompt = `
-You are an expert Ghanaian Educator and NaCCA (National Council for Curriculum and Assessment) Curriculum Specialist for Ghana's New Standard-Based Curriculum (NSBC).
-Generate a complete, highly detailed Learner Plan (Lesson Plan/Notes) and Learner Writing Notes with Exercises for the following lesson:
+  const aiClient = ai;
+  const days = Math.max(1, Number(inputs.numberOfDays) || 4);
 
-LESSON PARAMETERS:
-- Week Ending: ${inputs.weekEnding || '16th October, 2026'}
-- School Name: ${inputs.schoolName || 'Adom Basic School'}
-- Teacher's Name: ${inputs.teacherName || 'Class Teacher'}
-- Class / Grade Level: ${inputs.classLevel || 'Basic 4'}
-- Subject: ${inputs.subject}
-- Strand: ${inputs.strand}
-- Sub-strand: ${inputs.subStrand}
-- Content Standard: ${inputs.contentStandard || 'B4.1.1.1'}
-- Indicator: ${inputs.indicator || 'B4.1.1.1.1'}
-- Class Size: ${inputs.classSize || 45} learners
-- Lesson Duration: ${inputs.duration || '60 Mins'}
-- Number of Days/Lessons: ${inputs.numberOfDays || 4}
-- Head of School / Headteacher: ${inputs.nameOfHead || 'Mr. Kwesi Mensah'}
-- Additional Instructions: ${inputs.additionalInstructions || 'Ensure authentic Ghanaian educational terminology and exercises.'}
+  // ------------------------------------------------------------------
+  // Robust JSON call: model fallback slots + re-sampling on malformed
+  // JSON (truncated / unterminated output). Non-transient API errors
+  // (auth, invalid request) abort immediately.
+  // ------------------------------------------------------------------
+  const callGeminiJson = async (contents: string, config: any, label: string): Promise<any> => {
+    let lastErr: any = null;
+    for (const slot of AI_SLOTS) {
+      if (slot.delayMs > 0) await new Promise(r => setTimeout(r, slot.delayMs));
+      for (let sample = 1; sample <= 2; sample++) {
+        try {
+          const response = await aiClient.models.generateContent({
+            model: slot.model,
+            contents,
+            config
+          });
+          const raw = response.text || "{}";
+          try {
+            return JSON.parse(raw);
+          } catch (parseErr) {
+            lastErr = parseErr;
+            console.warn(`[AI:${label}] model=${slot.model} sample=${sample} returned invalid JSON (${raw.length} chars): ${String(parseErr).slice(0, 160)}`);
+            await new Promise(r => setTimeout(r, 2000));
+            continue; // re-sample (next sample, then next model slot)
+          }
+        } catch (e: any) {
+          lastErr = e;
+          const code = String(e?.code ?? e?.status ?? '');
+          const msg = String(e?.message ?? e);
+          console.warn(`[AI:${label}] model=${slot.model} sample=${sample} failed: code=${code} ${msg.slice(0, 250)}`);
+          const transient = /429|500|502|503|unavailable|resource_exhausted|quota|rate ?limit|deadline|timeout|socket/i
+            .test(`${code} ${msg}`);
+          if (!transient) throw e; // auth / invalid request — do not retry
+          break; // transient API error — next slot (its delay applies)
+        }
+      }
+    }
+    throw lastErr || new Error(`AI call failed: ${label}`);
+  };
+
+  // ------------------------------------------------------------------
+  // Split generation: one small call for the plan core, plus one small
+  // call PER DAY for that day's 50-item exercise bank. A full plan in a
+  // single response (~67KB of JSON) frequently exceeds the model output
+  // limit and comes back truncated/invalid; ~15-30KB responses are safe.
+  // All calls run in parallel, so total time ≈ the slowest single call.
+  // ------------------------------------------------------------------
+  const coreConfig = {
+    systemInstruction: "You are a NaCCA Ghana Curriculum Master Specialist. Return strict, valid JSON matching the given schema exactly.",
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: Type.OBJECT,
+      properties: {
+        header: {
+          type: Type.OBJECT,
+          properties: {
+            performanceIndicator: { type: Type.STRING },
+            teachingResources: { type: Type.ARRAY, items: { type: Type.STRING } },
+            coreCompetencies: { type: Type.ARRAY, items: { type: Type.STRING } },
+            keyWords: { type: Type.ARRAY, items: { type: Type.STRING } }
+          },
+          required: ["performanceIndicator", "teachingResources", "coreCompetencies", "keyWords"]
+        },
+        starter: {
+          type: Type.OBJECT,
+          properties: {
+            duration: { type: Type.STRING },
+            teacherActivities: { type: Type.STRING },
+            learnerActivities: { type: Type.STRING }
+          },
+          required: ["teacherActivities", "learnerActivities"]
+        },
+        mainPhase: {
+          type: Type.OBJECT,
+          properties: {
+            duration: { type: Type.STRING },
+            step1Teacher: { type: Type.STRING },
+            step1Learner: { type: Type.STRING },
+            step2Teacher: { type: Type.STRING },
+            step2Learner: { type: Type.STRING },
+            step3Teacher: { type: Type.STRING },
+            step3Learner: { type: Type.STRING },
+            assessmentMethod: { type: Type.STRING }
+          },
+          required: ["step1Teacher", "step1Learner", "step2Teacher", "step2Learner", "step3Teacher", "step3Learner", "assessmentMethod"]
+        },
+        plenaryReflection: {
+          type: Type.OBJECT,
+          properties: {
+            duration: { type: Type.STRING },
+            teacherSummary: { type: Type.STRING },
+            learnerReflection: { type: Type.STRING }
+          },
+          required: ["teacherSummary", "learnerReflection"]
+        },
+        dailyPlans: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              dayNumber: { type: Type.NUMBER },
+              starter: {
+                type: Type.OBJECT,
+                properties: {
+                  duration: { type: Type.STRING },
+                  teacherActivities: { type: Type.STRING },
+                  learnerActivities: { type: Type.STRING }
+                },
+                required: ["teacherActivities", "learnerActivities"]
+              },
+              mainPhase: {
+                type: Type.OBJECT,
+                properties: {
+                  duration: { type: Type.STRING },
+                  step1Teacher: { type: Type.STRING },
+                  step1Learner: { type: Type.STRING },
+                  step2Teacher: { type: Type.STRING },
+                  step2Learner: { type: Type.STRING },
+                  step3Teacher: { type: Type.STRING },
+                  step3Learner: { type: Type.STRING },
+                  assessmentMethod: { type: Type.STRING }
+                },
+                required: ["step1Teacher", "step1Learner", "step2Teacher", "step2Learner", "step3Teacher", "step3Learner", "assessmentMethod"]
+              },
+              plenaryReflection: {
+                type: Type.OBJECT,
+                properties: {
+                  duration: { type: Type.STRING },
+                  teacherSummary: { type: Type.STRING },
+                  learnerReflection: { type: Type.STRING }
+                },
+                required: ["teacherSummary", "learnerReflection"]
+              }
+            },
+            required: ["dayNumber", "starter", "mainPhase", "plenaryReflection"]
+          }
+        },
+        rcaQuestions: {
+          type: Type.OBJECT,
+          properties: {
+            reflect: { type: Type.STRING },
+            connect: { type: Type.STRING },
+            apply: { type: Type.STRING }
+          },
+          required: ["reflect", "connect", "apply"]
+        },
+        learnerWritingNotes: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            introduction: { type: Type.STRING },
+            keyDefinitions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  term: { type: Type.STRING },
+                  definition: { type: Type.STRING }
+                },
+                required: ["term", "definition"]
+              }
+            },
+            mainContentPoints: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  heading: { type: Type.STRING },
+                  body: { type: Type.STRING },
+                  bulletPoints: { type: Type.ARRAY, items: { type: Type.STRING } }
+                },
+                required: ["heading", "body"]
+              }
+            },
+            summary: { type: Type.STRING }
+          },
+          required: ["title", "introduction", "keyDefinitions", "mainContentPoints", "summary"]
+        }
+      },
+      required: [
+        "header",
+        "starter",
+        "mainPhase",
+        "plenaryReflection",
+        "dailyPlans",
+        "rcaQuestions",
+        "learnerWritingNotes"
+      ]
+    }
+  };
+
+  const dayConfig = {
+    systemInstruction: "You are a NaCCA Ghana Curriculum Master Specialist. Return strict, valid JSON matching the given schema exactly.",
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: Type.OBJECT,
+      properties: {
+        fillInBlanks: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              exerciseNumber: { type: Type.NUMBER },
+              questionNumber: { type: Type.NUMBER },
+              question: { type: Type.STRING },
+              blankAnswer: { type: Type.STRING }
+            },
+            required: ["exerciseNumber", "questionNumber", "question", "blankAnswer"]
+          }
+        },
+        mcqs: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              exerciseNumber: { type: Type.NUMBER },
+              questionNumber: { type: Type.NUMBER },
+              question: { type: Type.STRING },
+              options: {
+                type: Type.OBJECT,
+                properties: {
+                  A: { type: Type.STRING },
+                  B: { type: Type.STRING },
+                  C: { type: Type.STRING },
+                  D: { type: Type.STRING }
+                },
+                required: ["A", "B", "C", "D"]
+              },
+              correctOption: { type: Type.STRING },
+              explanation: { type: Type.STRING }
+            },
+            required: ["exerciseNumber", "questionNumber", "question", "options", "correctOption"]
+          }
+        },
+        matching: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              exerciseNumber: { type: Type.NUMBER },
+              questionNumber: { type: Type.NUMBER },
+              itemA: { type: Type.STRING },
+              itemB: { type: Type.STRING },
+              matchKey: { type: Type.STRING }
+            },
+            required: ["exerciseNumber", "questionNumber", "itemA", "itemB", "matchKey"]
+          }
+        },
+        application: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              exerciseNumber: { type: Type.NUMBER },
+              questionNumber: { type: Type.NUMBER },
+              scenarioOrContext: { type: Type.STRING },
+              question: { type: Type.STRING },
+              sampleAnswer: { type: Type.STRING }
+            },
+            required: ["exerciseNumber", "questionNumber", "question", "sampleAnswer"]
+          }
+        },
+        diagram: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              exerciseNumber: { type: Type.NUMBER },
+              questionNumber: { type: Type.NUMBER },
+              diagramCategory: { type: Type.STRING },
+              diagramTitle: { type: Type.STRING },
+              diagramPrompt: { type: Type.STRING },
+              diagramAsciiOrDescription: { type: Type.STRING },
+              question: { type: Type.STRING },
+              expectedAnswer: { type: Type.STRING }
+            },
+            required: ["exerciseNumber", "questionNumber", "diagramTitle", "diagramPrompt", "question", "expectedAnswer"]
+          }
+        }
+      },
+      required: ["fillInBlanks", "mcqs", "matching", "application", "diagram"]
+    }
+  };
+
+  const corePrompt = `
+You are an expert Ghanaian Educator and NaCCA (National Council for Curriculum and Assessment) Curriculum Specialist for Ghana's New Standard-Based Curriculum (NSBC).
+Generate the LESSON PLAN AND STUDY NOTES portion of a Learner Plan for the following lesson.
+IMPORTANT: Exercises are generated separately — do NOT include any exercises or exercise arrays in your response.
+
+${buildLessonParams(inputs)}
 
 REQUIREMENTS:
 1. Header & Performance Indicator(s):
    - MANDATORY: Always use "Learner can:" prefix (DO NOT use "Learner will be able to:").
-   - If the lesson spans ${inputs.numberOfDays || 1} day(s)/lesson(s), YOU MUST INCLUDE ALL PERFORMANCE INDICATORS FOR EACH DAY in 'performanceIndicator' string field, formatted as:
+   - If the lesson spans ${days} day(s)/lesson(s), YOU MUST INCLUDE ALL PERFORMANCE INDICATORS FOR EACH DAY in the 'performanceIndicator' string field, formatted as:
      Day 1: Learner can: [Day 1 performance indicator]
      Day 2: Learner can: [Day 2 performance indicator]
      (For a 1-day plan, format as "Learner can: [performance indicator]")
@@ -84,288 +391,64 @@ REQUIREMENTS:
 7. RCA Questions: 3 distinct questions - Reflect, Connect, and Apply (focusing on local Ghanaian life and everyday context).
 8. Learner Writing Notes: Very detailed, thorough, student-friendly notes for learners to write in their notebooks. Must include a comprehensive introduction, 5-8 key vocabulary definitions, 3 detailed main content sections with rich explanatory text and step-by-step bullet points, and a thorough summary.
 9. Daily Lesson Plans:
-   - This plan is for ${inputs.numberOfDays || 1} day(s)/lesson(s).
-   - In 'dailyPlans' array, generate EXACTLY ${inputs.numberOfDays || 1} items (tagged dayNumber: 1..${inputs.numberOfDays || 1}). Each day must have a distinct Starter, Main Phase (Step 1, Step 2, Step 3, Assessment), and Plenary/Reflection showing realistic progression across the days.
-10. Learner Exercises:
-   - FOR EVERY SINGLE LESSON DAY (Day 1 to Day ${inputs.numberOfDays || 1}), YOU MUST GENERATE ALL 5 EXERCISE TIERS, WITH EXACTLY 2 EXERCISES PER TIER, AND EXACTLY 5 QUESTIONS PER EXERCISE:
-     a) Fill in the Blanks: 2 Exercises per day (Exercise 1: Questions 1 to 5; Exercise 2: Questions 1 to 5). Each question has a clear sentence with "____" blank and the exact single answer. Tagged with dayNumber, exerciseNumber (1 or 2), and questionNumber (1 to 5). Total: ${(inputs.numberOfDays || 1) * 10} items.
-     b) Multiple Choice (MCQs): 2 Exercises per day (Exercise 1: Questions 1 to 5; Exercise 2: Questions 1 to 5). 4 distinct options (A, B, C, D), correctOption, and explanation. Tagged with dayNumber, exerciseNumber (1 or 2), and questionNumber (1 to 5). Total: ${(inputs.numberOfDays || 1) * 10} items.
-     c) Matching Columns: 2 Exercises per day (Exercise 1: Questions 1 to 5; Exercise 2: Questions 1 to 5). Column A items with matching Column B descriptions and matchKey. Tagged with dayNumber, exerciseNumber (1 or 2), and questionNumber (1 to 5). Total: ${(inputs.numberOfDays || 1) * 10} items.
-     d) Application Exercises: 2 Exercises per day (Exercise 1: Questions 1 to 5; Exercise 2: Questions 1 to 5). Real-life Ghanaian situations, problem-solving prompts, and practical scenarios testing deep conceptual transfer, with model answer/guideline. Tagged with dayNumber, exerciseNumber (1 or 2), and questionNumber (1 to 5). Total: ${(inputs.numberOfDays || 1) * 10} items.
-     e) Diagram Exercises: 2 Exercises per day (Exercise 1: Questions 1 to 5; Exercise 2: Questions 1 to 5). Tailored strictly to class level:
-        - For Early Years & Lower Primary (Nursery, KG1, KG2, Basic 1, Basic 2, Basic 3): Questions asking learners to identify pictures (e.g. animals, community tools, Ghanaian symbols, fruits), label simple diagrams, trace dotted line diagrams/shapes, trace letters/words, and draw illustrations.
-        - For Upper Primary & JHS (Basic 4 to Basic 9): Questions asking learners to identify subject diagrams, label structures (e.g. plant/human organs, maps, computer components, geometric nets, place value charts), and complete visual tasks.
-        - Tagged with dayNumber, exerciseNumber (1 or 2), questionNumber (1 to 5), diagramCategory, diagramTitle, diagramPrompt, diagramAsciiOrDescription, question, and expectedAnswer. Total: ${(inputs.numberOfDays || 1) * 10} items.
-11. STYLE & COMPLETENESS:
-   - Write EVERY text field as clean, natural, concise prose (1-3 sentences). Never repeat the same word or phrase. Never output instructions, formatting notes, JSON comments, or any meta text about how you are generating the plan.
-   - Questions must be about the lesson CONTENT (the indicator), never about the plan's own structure (strands, sub-strands, content standards, performance indicators). Refer to the topic by its plain name.
-   - You MUST produce all five exercise tiers (A-E) for EVERY day, with no missing sections, even for later days.
+   - This plan is for ${days} day(s)/lesson(s).
+   - In 'dailyPlans' array, generate EXACTLY ${days} item(s) (tagged dayNumber: 1..${days}). Each day must have a distinct Starter, Main Phase (Step 1, Step 2, Step 3, Assessment), and Plenary/Reflection showing realistic progression across the days.
+10. ${STYLE_RULES}
 `;
 
-    const aiClient = ai;
-    // Retry ladder, tuned for the observed failure mode: 503 UNAVAILABLE
-    // "This model is currently experiencing high demand" on the primary
-    // model. Strategy: fail fast to the backup model (it has a separate
-    // capacity pool), then wait and retry both, since demand spikes
-    // usually clear within a minute or two.
-    const AI_ATTEMPTS: Array<{ model: string; delayMs: number }> = [
-      { model: "gemini-3.6-flash", delayMs: 0 },
-      { model: "gemini-2.5-flash", delayMs: 0 },
-      { model: "gemini-3.6-flash", delayMs: 20000 },
-      { model: "gemini-2.5-flash", delayMs: 45000 }
-    ];
-    const buildAiPlan = async (): Promise<LearnerPlanOutput> => {
-    let lastErr: any = null;
-    for (const step of AI_ATTEMPTS) {
-      if (step.delayMs > 0) await new Promise(r => setTimeout(r, step.delayMs));
-      try {
-          const response = await aiClient.models.generateContent({
-      model: step.model,
-      contents: prompt,
-      config: {
-        systemInstruction: "You are a NaCCA Ghana Curriculum Master Specialist. Return strict, valid JSON matching the schema for a Ghana Standard-Based Curriculum Lesson Plan and Notes.",
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            header: {
-              type: Type.OBJECT,
-              properties: {
-                performanceIndicator: { type: Type.STRING },
-                teachingResources: { type: Type.ARRAY, items: { type: Type.STRING } },
-                coreCompetencies: { type: Type.ARRAY, items: { type: Type.STRING } },
-                keyWords: { type: Type.ARRAY, items: { type: Type.STRING } }
-              },
-              required: ["performanceIndicator", "teachingResources", "coreCompetencies", "keyWords"]
-            },
-            starter: {
-              type: Type.OBJECT,
-              properties: {
-                duration: { type: Type.STRING },
-                teacherActivities: { type: Type.STRING },
-                learnerActivities: { type: Type.STRING }
-              },
-              required: ["teacherActivities", "learnerActivities"]
-            },
-            mainPhase: {
-              type: Type.OBJECT,
-              properties: {
-                duration: { type: Type.STRING },
-                step1Teacher: { type: Type.STRING },
-                step1Learner: { type: Type.STRING },
-                step2Teacher: { type: Type.STRING },
-                step2Learner: { type: Type.STRING },
-                step3Teacher: { type: Type.STRING },
-                step3Learner: { type: Type.STRING },
-                assessmentMethod: { type: Type.STRING }
-              },
-              required: ["step1Teacher", "step1Learner", "step2Teacher", "step2Learner", "step3Teacher", "step3Learner", "assessmentMethod"]
-            },
-            plenaryReflection: {
-              type: Type.OBJECT,
-              properties: {
-                duration: { type: Type.STRING },
-                teacherSummary: { type: Type.STRING },
-                learnerReflection: { type: Type.STRING }
-              },
-              required: ["teacherSummary", "learnerReflection"]
-            },
-            dailyPlans: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  dayNumber: { type: Type.NUMBER },
-                  starter: {
-                    type: Type.OBJECT,
-                    properties: {
-                      duration: { type: Type.STRING },
-                      teacherActivities: { type: Type.STRING },
-                      learnerActivities: { type: Type.STRING }
-                    },
-                    required: ["teacherActivities", "learnerActivities"]
-                  },
-                  mainPhase: {
-                    type: Type.OBJECT,
-                    properties: {
-                      duration: { type: Type.STRING },
-                      step1Teacher: { type: Type.STRING },
-                      step1Learner: { type: Type.STRING },
-                      step2Teacher: { type: Type.STRING },
-                      step2Learner: { type: Type.STRING },
-                      step3Teacher: { type: Type.STRING },
-                      step3Learner: { type: Type.STRING },
-                      assessmentMethod: { type: Type.STRING }
-                    },
-                    required: ["step1Teacher", "step1Learner", "step2Teacher", "step2Learner", "step3Teacher", "step3Learner", "assessmentMethod"]
-                  },
-                  plenaryReflection: {
-                    type: Type.OBJECT,
-                    properties: {
-                      duration: { type: Type.STRING },
-                      teacherSummary: { type: Type.STRING },
-                      learnerReflection: { type: Type.STRING }
-                    },
-                    required: ["teacherSummary", "learnerReflection"]
-                  }
-                },
-                required: ["dayNumber", "starter", "mainPhase", "plenaryReflection"]
-              }
-            },
-            rcaQuestions: {
-              type: Type.OBJECT,
-              properties: {
-                reflect: { type: Type.STRING },
-                connect: { type: Type.STRING },
-                apply: { type: Type.STRING }
-              },
-              required: ["reflect", "connect", "apply"]
-            },
-            learnerWritingNotes: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                introduction: { type: Type.STRING },
-                keyDefinitions: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      term: { type: Type.STRING },
-                      definition: { type: Type.STRING }
-                    },
-                    required: ["term", "definition"]
-                  }
-                },
-                mainContentPoints: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      heading: { type: Type.STRING },
-                      body: { type: Type.STRING },
-                      bulletPoints: { type: Type.ARRAY, items: { type: Type.STRING } }
-                    },
-                    required: ["heading", "body"]
-                  }
-                },
-                summary: { type: Type.STRING }
-              },
-              required: ["title", "introduction", "keyDefinitions", "mainContentPoints", "summary"]
-            },
-            exercises: {
-              type: Type.OBJECT,
-              properties: {
-                fillInBlanks: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      dayNumber: { type: Type.NUMBER },
-                      exerciseNumber: { type: Type.NUMBER },
-                      questionNumber: { type: Type.NUMBER },
-                      question: { type: Type.STRING },
-                      blankAnswer: { type: Type.STRING }
-                    },
-                    required: ["id", "question", "blankAnswer"]
-                  }
-                },
-                mcqs: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      dayNumber: { type: Type.NUMBER },
-                      exerciseNumber: { type: Type.NUMBER },
-                      questionNumber: { type: Type.NUMBER },
-                      question: { type: Type.STRING },
-                      options: {
-                        type: Type.OBJECT,
-                        properties: {
-                          A: { type: Type.STRING },
-                          B: { type: Type.STRING },
-                          C: { type: Type.STRING },
-                          D: { type: Type.STRING }
-                        },
-                        required: ["A", "B", "C", "D"]
-                      },
-                      correctOption: { type: Type.STRING },
-                      explanation: { type: Type.STRING }
-                    },
-                    required: ["id", "question", "options", "correctOption"]
-                  }
-                },
-                matching: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      dayNumber: { type: Type.NUMBER },
-                      exerciseNumber: { type: Type.NUMBER },
-                      questionNumber: { type: Type.NUMBER },
-                      itemA: { type: Type.STRING },
-                      itemB: { type: Type.STRING },
-                      matchKey: { type: Type.STRING }
-                    },
-                    required: ["id", "itemA", "itemB", "matchKey"]
-                  }
-                },
-                application: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      dayNumber: { type: Type.NUMBER },
-                      exerciseNumber: { type: Type.NUMBER },
-                      questionNumber: { type: Type.NUMBER },
-                      scenarioOrContext: { type: Type.STRING },
-                      question: { type: Type.STRING },
-                      sampleAnswer: { type: Type.STRING }
-                    },
-                    required: ["id", "question", "sampleAnswer"]
-                  }
-                },
-                diagram: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      dayNumber: { type: Type.NUMBER },
-                      exerciseNumber: { type: Type.NUMBER },
-                      questionNumber: { type: Type.NUMBER },
-                      diagramCategory: { type: Type.STRING },
-                      diagramTitle: { type: Type.STRING },
-                      diagramPrompt: { type: Type.STRING },
-                      diagramAsciiOrDescription: { type: Type.STRING },
-                      question: { type: Type.STRING },
-                      expectedAnswer: { type: Type.STRING }
-                    },
-                    required: ["id", "diagramTitle", "diagramPrompt", "question", "expectedAnswer"]
-                  }
-                }
-              },
-              required: ["fillInBlanks", "mcqs", "matching", "application", "diagram"]
-            }
-          },
-          required: [
-            "header",
-            "starter",
-            "mainPhase",
-            "plenaryReflection",
-            "rcaQuestions",
-            "learnerWritingNotes",
-            "exercises"
-          ]
+  const dayPrompt = (day: number): string => `
+You are an expert Ghanaian Educator and NaCCA (National Council for Curriculum and Assessment) Curriculum Specialist for Ghana's New Standard-Based Curriculum (NSBC).
+Generate ONLY the learner exercise bank for DAY ${day} of the following lesson.
+IMPORTANT: Do NOT include lesson plans, notes, headers, or any other day's exercises — exercises for day ${day} only.
+
+${buildLessonParams(inputs)}
+- FOCUS: Day ${day} of ${days} — all questions target THIS day's portion of the lesson content.
+
+REQUIREMENTS — exactly 10 items per tier (Exercise 1: questions 1-5; Exercise 2: questions 1-5):
+a) fillInBlanks: 10 items. Each question is a clear sentence with a "____" blank and the exact single answer. Tag each with exerciseNumber (1 or 2) and questionNumber (1 to 5).
+b) mcqs: 10 items. 4 distinct options (A, B, C, D), correctOption, and a short explanation. Tag each with exerciseNumber (1 or 2) and questionNumber (1 to 5).
+c) matching: 10 items. Column A item, matching Column B description, and matchKey. Tag each with exerciseNumber (1 or 2) and questionNumber (1 to 5).
+d) application: 10 items. Real-life Ghanaian situations, problem-solving prompts, and practical scenarios testing deep conceptual transfer, with model answer/guideline. Tag each with exerciseNumber (1 or 2) and questionNumber (1 to 5).
+e) diagram: 10 items. Tailored strictly to class level:
+   - For Early Years & Lower Primary (Nursery, KG1, KG2, Basic 1, Basic 2, Basic 3): identify pictures (animals, community tools, Ghanaian symbols, fruits), label simple diagrams, trace dotted line diagrams/shapes/letters/words, draw illustrations.
+   - For Upper Primary & JHS (Basic 4 to Basic 9): identify subject diagrams, label structures (plant/human organs, maps, computer components, geometric nets, place value charts), complete visual tasks.
+   - Tag each with exerciseNumber (1 or 2), questionNumber (1 to 5), diagramCategory, diagramTitle, diagramPrompt, diagramAsciiOrDescription, question, and expectedAnswer.
+10. ${STYLE_RULES}
+`;
+
+  const buildAiPlan = async (): Promise<LearnerPlanOutput> => {
+    // One core call + one call per day — all in parallel.
+    const dayCallPromises = Array.from({ length: days }, (_, i) =>
+      callGeminiJson(dayPrompt(i + 1), dayConfig, `exercises-day${i + 1}`)
+    );
+    const [coreData, ...dayParts] = await Promise.all([
+      callGeminiJson(corePrompt, coreConfig, "core-plan"),
+      ...dayCallPromises
+    ]);
+
+    // Merge per-day exercise banks, normalising tags server-side.
+    const tierKeys = ["fillInBlanks", "mcqs", "matching", "application", "diagram"] as const;
+    const exercises: any = {
+      fillInBlanks: [],
+      mcqs: [],
+      matching: [],
+      application: [],
+      diagram: []
+    };
+    dayParts.forEach((part, idx) => {
+      const dayNum = idx + 1;
+      for (const key of tierKeys) {
+        const arr = Array.isArray(part?.[key]) ? part[key] : [];
+        for (const item of arr) {
+          if (!item || typeof item !== "object") continue;
+          item.dayNumber = dayNum;
+          if (!item.id) {
+            item.id = `${key}_d${dayNum}_e${item.exerciseNumber ?? 1}_q${item.questionNumber ?? 1}`;
+          }
+          (exercises[key] as any[]).push(item);
         }
       }
     });
-
-    const parsedData = JSON.parse(response.text || "{}");
 
     const fullPlan: LearnerPlanOutput = {
       id: `plan_${Date.now()}`,
@@ -377,87 +460,69 @@ REQUIREMENTS:
         classSize: inputs.classSize || 45,
         subject: inputs.subject,
         duration: inputs.duration || '60 Mins',
-        numberOfDays: inputs.numberOfDays || 4,
+        numberOfDays: days,
         strand: inputs.strand,
         subStrand: inputs.subStrand,
         contentStandard: inputs.contentStandard || 'B4.1.1.1',
         indicator: inputs.indicator || 'B4.1.1.1.1',
-        performanceIndicator: parsedData.header?.performanceIndicator || `Learners will demonstrate understanding of ${inputs.subStrand}.`,
+        performanceIndicator: coreData?.header?.performanceIndicator || `Learners will demonstrate understanding of ${inputs.subStrand}.`,
         selectedDays: (inputs.selectedDays && inputs.selectedDays.length > 0)
           ? inputs.selectedDays
-          : ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].slice(0, inputs.numberOfDays || 1),
+          : ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].slice(0, days),
         references: (inputs.references && inputs.references.trim() !== '' && !inputs.references.toLowerCase().includes('nacca standard curriculum guide'))
           ? inputs.references
           : getNaCCACurriculumReference(inputs.subject || 'Mathematics', inputs.classLevel || 'Basic 4', inputs.strand, inputs.subStrand, inputs.indicator),
-        teachingResources: parsedData.header?.teachingResources || ['Textbooks', 'Chalkboard', 'Charts'],
-        coreCompetencies: (parsedData.header?.coreCompetencies && parsedData.header.coreCompetencies.length > 0)
-          ? parsedData.header.coreCompetencies
+        teachingResources: coreData?.header?.teachingResources || ['Textbooks', 'Chalkboard', 'Charts'],
+        coreCompetencies: (coreData?.header?.coreCompetencies && coreData.header.coreCompetencies.length > 0)
+          ? coreData.header.coreCompetencies
           : (inputs.coreCompetencies && inputs.coreCompetencies.length > 0)
             ? inputs.coreCompetencies
             : getAutoCoreCompetencies(inputs.subject, inputs.strand, inputs.subStrand),
-        keyWords: parsedData.header?.keyWords || ['Concept', 'Definition'],
+        keyWords: coreData?.header?.keyWords || ['Concept', 'Definition'],
         nameOfHead: inputs.nameOfHead || 'Mr. Kwesi Mensah',
         teacherName: inputs.teacherName || 'Class Teacher',
         schoolName: inputs.schoolName || 'Adom Basic School'
       },
       starter: {
-        duration: parsedData.starter?.duration || '10 Mins',
-        teacherActivities: parsedData.starter?.teacherActivities || 'Welcome learners and review previous lesson.',
-        learnerActivities: parsedData.starter?.learnerActivities || 'Respond to warm-up questions.'
+        duration: coreData?.starter?.duration || '10 Mins',
+        teacherActivities: coreData?.starter?.teacherActivities || 'Welcome learners and review previous lesson.',
+        learnerActivities: coreData?.starter?.learnerActivities || 'Respond to warm-up questions.'
       },
       mainPhase: {
-        duration: parsedData.mainPhase?.duration || '40 Mins',
-        step1Teacher: parsedData.mainPhase?.step1Teacher || 'Explain new concepts.',
-        step1Learner: parsedData.mainPhase?.step1Learner || 'Observe and take notes.',
-        step2Teacher: parsedData.mainPhase?.step2Teacher || 'Guide group work.',
-        step2Learner: parsedData.mainPhase?.step2Learner || 'Collaborate in groups.',
-        step3Teacher: parsedData.mainPhase?.step3Teacher || 'Assign individual practice.',
-        step3Learner: parsedData.mainPhase?.step3Learner || 'Solve exercises in workbooks.',
-        assessmentMethod: parsedData.mainPhase?.assessmentMethod || 'Class observation and workbook checks.'
+        duration: coreData?.mainPhase?.duration || '40 Mins',
+        step1Teacher: coreData?.mainPhase?.step1Teacher || 'Explain new concepts.',
+        step1Learner: coreData?.mainPhase?.step1Learner || 'Observe and take notes.',
+        step2Teacher: coreData?.mainPhase?.step2Teacher || 'Guide group work.',
+        step2Learner: coreData?.mainPhase?.step2Learner || 'Collaborate in groups.',
+        step3Teacher: coreData?.mainPhase?.step3Teacher || 'Assign individual practice.',
+        step3Learner: coreData?.mainPhase?.step3Learner || 'Solve exercises in workbooks.',
+        assessmentMethod: coreData?.mainPhase?.assessmentMethod || 'Class observation and workbook checks.'
       },
       plenaryReflection: {
-        duration: parsedData.plenaryReflection?.duration || '10 Mins',
-        teacherSummary: parsedData.plenaryReflection?.teacherSummary || 'Summarize key points.',
-        learnerReflection: parsedData.plenaryReflection?.learnerReflection || 'State lesson takeaways.'
+        duration: coreData?.plenaryReflection?.duration || '10 Mins',
+        teacherSummary: coreData?.plenaryReflection?.teacherSummary || 'Summarize key points.',
+        learnerReflection: coreData?.plenaryReflection?.learnerReflection || 'State lesson takeaways.'
       },
       rcaQuestions: {
-        reflect: parsedData.rcaQuestions?.reflect || `What was the most important thing you learned about ${inputs.subStrand}?`,
-        connect: parsedData.rcaQuestions?.connect || `How does this lesson connect to what you already knew?`,
-        apply: parsedData.rcaQuestions?.apply || `How can you use this knowledge in your daily life?`
+        reflect: coreData?.rcaQuestions?.reflect || `What was the most important thing you learned about ${inputs.subStrand}?`,
+        connect: coreData?.rcaQuestions?.connect || `How does this lesson connect to what you already knew?`,
+        apply: coreData?.rcaQuestions?.apply || `How can you use this knowledge in your daily life?`
       },
-      learnerWritingNotes: parsedData.learnerWritingNotes || {
+      learnerWritingNotes: coreData?.learnerWritingNotes || {
         title: `LEARNER NOTES: ${inputs.subject.toUpperCase()} - ${inputs.subStrand.toUpperCase()}`,
         introduction: `Key study notes on ${inputs.subStrand}.`,
         keyDefinitions: [],
         mainContentPoints: [],
         summary: `Review notes regularly.`
       },
-      exercises: parsedData.exercises || {
-        fillInBlanks: [],
-        mcqs: [],
-        matching: [],
-        application: [],
-        diagram: []
-      },
-      dailyPlans: (parsedData.dailyPlans && parsedData.dailyPlans.length > 0) ? parsedData.dailyPlans : undefined,
+      exercises,
+      dailyPlans: (coreData?.dailyPlans && coreData.dailyPlans.length > 0) ? coreData.dailyPlans : undefined,
       generationMode: 'AI'
-    };
+    } as LearnerPlanOutput;
     return fullPlan;
-        } catch (e: any) {
-          lastErr = e;
-          const code = String(e?.code ?? e?.status ?? '');
-          const msg = String(e?.message ?? e);
-          console.warn(`[AI] model=${step.model} failed: code=${code} ${msg.slice(0, 400)}`);
-          // Non-transient errors (auth, invalid request, malformed schema)
-          // are not worth retrying — stop the ladder immediately.
-          const transient = /429|500|502|503|unavailable|resource_exhausted|quota|rate ?limit|deadline|timeout|socket/i
-            .test(`${code} ${msg}`);
-          if (!transient) break;
-        }
-      }
-    throw lastErr || new Error('All AI models failed');
-    };
+  };
 
+  try {
     let plan = await buildAiPlan();
 
     // Guard against degenerated LLM output (repetition loops that sometimes
