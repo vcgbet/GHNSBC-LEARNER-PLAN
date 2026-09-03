@@ -237,7 +237,7 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
     ...(exemplarSentences.length > 0 ? [{
       heading: `4. Worked Example from the Official Curriculum`,
       body: `Work through this example from the NaCCA curriculum guide, copying each step into your exercise book:`,
-      bulletPoints: exemplarSentences.slice(0, 3)
+      bulletPoints: exemplarSentences.slice(0, 3).map(s => s.charAt(0).toUpperCase() + s.slice(1))
     }] : [])
   ] : [
     {
@@ -277,7 +277,7 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
       definition: getTermDefinition(kw, inputs.subject, topic, idx, exemplarText)
     })),
     mainContentPoints,
-    summary: `SUMMARY & REVISION TAKEAWAY: ${topic} is an integral part of your ${inputs.subject} study. To master this topic, regularly review your key definitions (${keywords.join(', ')}), practice all assigned exercises across the ${numDays} lesson day(s), and apply these principles in daily activities!`
+    summary: `${topic} is an integral part of your ${inputs.subject} study. To master this topic, regularly review your key definitions (${keywords.join(', ')}), practice all assigned exercises across the ${numDays} lesson day(s), and apply these principles in daily activities!`
   };
 
   // Generate Multi-Day Exercises (2 FIBs, 2 MCQs, 2 Matching, 2 Application, 2 Diagram per day - 5 Qs each)
@@ -578,7 +578,7 @@ function termDistractors(answer: string, terms: string[]): string[] {
     out.push(t);
     if (out.length >= 3) break;
   }
-  const fillers = ['An unrelated term from another strand', 'A term not covered in this lesson', 'A vocabulary word from a different topic'];
+  const fillers = ['An unrelated term from another subject', 'A term not covered in this lesson', 'A vocabulary word from a different topic'];
   let fi = 0;
   while (out.length < 3 && fi < fillers.length) out.push(fillers[fi++]);
   return out;
@@ -590,7 +590,7 @@ function buildClozeMCQ(day: number, ex: number, q: number, cloze: ClozeSpan, dis
     if (uniq.length >= 4) break;
     if (!uniq.some(u => u.toLowerCase() === d.toLowerCase())) uniq.push(d);
   }
-  const pads = ['None of these', 'A value not shown in the curriculum example', 'An unrelated figure from another strand'];
+  const pads = ['None of these', 'A value not shown in the curriculum example', 'An unrelated figure from another subject'];
   let pi = 0;
   while (uniq.length < 4 && pi < pads.length) uniq.push(pads[pi++]);
   const all = uniq.slice(0, 4);
