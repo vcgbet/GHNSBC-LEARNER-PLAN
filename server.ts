@@ -8,6 +8,7 @@ import { sanitizeAiPlan, backfillExercises } from "./src/utils/aiPlanGuard";
 import { getAutoCoreCompetencies } from "./src/utils/coreCompetencies";
 import { parseSchemeText } from "./src/utils/schemeParser";
 import { getNaCCACurriculumReference } from "./src/utils/naccaReferences";
+import { GHANA_CURRICULUM_DATA } from "./src/data/ghanaCurriculum";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -50,6 +51,15 @@ const MODEL_PREFERENCE = [
 ];
 const DEAD_MODELS = new Set<string>();
 let modelsPromise: Promise<string[] | null> | null = null;
+
+// Hard daily-quota exhaustion (429 "You exceeded your current quota, please
+// check your plan and billing details") does NOT clear in seconds — the
+// free tier resets once per day. When detected, pause all AI attempts for
+// a while so we do not burn the key's remaining quota on retries that are
+// guaranteed to fail, and the UI gets a fast, honest offline fallback.
+let QUOTA_EXHAUSTED_UNTIL = 0;
+const QUOTA_PAUSE_MS = 30 * 60 * 1000;
+const QUOTA_DEAD_PATTERN = /exceeded your current quota|check your plan and billing/i;
 
 function getAvailableModels(): Promise<string[] | null> {
   if (!modelsPromise) {
@@ -117,6 +127,76 @@ const STYLE_RULES = `STYLE & COMPLETENESS:
    - Write EVERY text field as clean, natural, concise prose (1-3 sentences). Never repeat the same word or phrase. Never output instructions, formatting notes, JSON comments, or any meta text about how you are generating the plan.
    - Questions must be about the lesson CONTENT (the indicator), never about the plan's own structure (strands, sub-strands, content standards, performance indicators). Refer to the topic by its plain name.`;
 
+// ------------------------------------------------------------------
+// Curriculum grounding: resolve the EXACT official indicator text,
+// its content standard, sibling indicators (for multi-day
+// progression) and NaCCA exemplars from the preloaded curriculum
+// data, so the AI teaches the lesson the teacher actually selected
+// instead of improvising a nearby topic.
+// ------------------------------------------------------------------
+interface CurriculumContext {
+  indicatorCode: string;
+  indicatorDesc: string;
+  csCode: string;
+  csDesc: string;
+  siblingDescs: string[];
+  exemplars: string[];
+  suggestedTLMs: string[];
+}
+
+const cleanObjective = (desc: string) =>
+  (desc || "").replace(/^(Learners?\s+will\s+be\s+able\s+to|Learners?\s+can)\s*:?/i, "").trim();
+
+function resolveCurriculumContext(inputs: PlanFormInputs): CurriculumContext | null {
+  const subj = GHANA_CURRICULUM_DATA.find(
+    (s: any) => s.name.toLowerCase() === (inputs.subject || "").toLowerCase()
+  );
+  if (!subj) return null;
+  let matched: { ind: any; cs: any } | null = null;
+  for (const strand of subj.strands) {
+    for (const subStrand of strand.subStrands) {
+      for (const cs of subStrand.contentStandards) {
+        for (const ind of cs.indicators) {
+          if (
+            inputs.indicator &&
+            (ind.code.toLowerCase() === inputs.indicator.toLowerCase() ||
+              inputs.indicator.toLowerCase().includes(ind.code.toLowerCase()))
+          ) {
+            matched = { ind, cs };
+          }
+        }
+      }
+    }
+  }
+  if (!matched) return null;
+  const { ind, cs } = matched;
+  return {
+    indicatorCode: ind.code,
+    indicatorDesc: cleanObjective(ind.description || ""),
+    csCode: cs.code,
+    csDesc: cs.description || "",
+    siblingDescs: (cs.indicators || []).map((i: any) => cleanObjective(i.description || "")).filter(Boolean),
+    exemplars: (ind.exemplars || []).map((e: any) => (typeof e === "string" ? e : "")).filter(Boolean),
+    suggestedTLMs: ind.suggestedTLMs || []
+  };
+}
+
+// One objective per day: day 1 = the selected indicator, later days =
+// the following sibling indicators under the same content standard
+// (natural curriculum progression); consolidate when they run out.
+function buildDayObjectives(ctx: CurriculumContext | null, days: number): string[] {
+  const base = ctx?.indicatorDesc || "demonstrate understanding of the lesson content";
+  if (!ctx || ctx.siblingDescs.length === 0) {
+    return Array.from({ length: days }, (_, i) => (i === 0 ? base : `apply and consolidate: ${base}`));
+  }
+  const mainIdx = Math.max(0, ctx.siblingDescs.indexOf(ctx.indicatorDesc));
+  return Array.from({ length: days }, (_, i) => {
+    if (i === 0) return ctx.indicatorDesc;
+    const idx = mainIdx + i;
+    return idx < ctx.siblingDescs.length ? ctx.siblingDescs[idx] : `apply and consolidate: ${ctx.indicatorDesc}`;
+  });
+}
+
 // Generate Plan API Endpoint
 app.post("/api/generate-plan", async (req, res) => {
   const inputs: PlanFormInputs = req.body;
@@ -133,8 +213,53 @@ app.post("/api/generate-plan", async (req, res) => {
     return res.json(offlinePlan);
   }
 
+  // If the free-tier daily quota was just found exhausted, skip AI entirely
+  // for the cooldown window (zero API calls) and serve the offline plan.
+  if (Date.now() < QUOTA_EXHAUSTED_UNTIL) {
+    const mins = Math.ceil((QUOTA_EXHAUSTED_UNTIL - Date.now()) / 60000);
+    console.log(`[AI] Quota cooldown active (${mins}m left) — serving offline plan without API calls.`);
+    return res.json({
+      ...generateOfflinePlan(inputs),
+      generationMode: "Offline Engine",
+      aiFailed: true,
+      aiError: `Gemini daily quota is currently exhausted. AI generation will resume automatically (the free tier resets each day, around 08:00 Ghana time). Retry in ~${mins} minutes or tomorrow morning.`
+    });
+  }
+
   const aiClient = ai;
   const days = Math.max(1, Number(inputs.numberOfDays) || 4);
+
+  // Ground every AI call in the official curriculum content for the exact
+  // indicator the teacher selected (description, content standard,
+  // per-day objectives, NaCCA exemplars).
+  const ctx = resolveCurriculumContext(inputs);
+  const dayObjectives = buildDayObjectives(ctx, days);
+  const exemplarText = ctx && ctx.exemplars.length > 0
+    ? ctx.exemplars.slice(0, 12).join("\n").slice(0, 1500)
+    : "";
+  const curriculumBlock = ctx
+    ? `
+AUTHORITATIVE CURRICULUM CONTENT (official NaCCA guide for this exact indicator — this IS the actual lesson the teacher selected. Follow it strictly and do NOT invent or substitute any other topic, even a related one):
+- Content Standard ${ctx.csCode}: ${ctx.csDesc}
+- Day objectives (use each VERBATIM, prefixed with "Learner can"):
+${dayObjectives.map((o, i) => `    Day ${i + 1}: Learner can ${o}`).join("\n")}
+- Official curriculum examples to build the notes, activities and exercises around:
+${exemplarText || "  (none recorded — use realistic Ghanaian examples of exactly this content)"}
+${ctx.suggestedTLMs.length ? `- Suggested teaching & learning materials: ${ctx.suggestedTLMs.join(", ")}` : ""}
+`
+    : "";
+  const piRequirement = ctx
+    ? `1. Header & Performance Indicator(s):
+   - MANDATORY: Always use "Learner can:" prefix (DO NOT use "Learner will be able to:").
+   - In the 'performanceIndicator' string field, list the day objectives from the AUTHORITATIVE CURRICULUM CONTENT block VERBATIM (one per day, in order):
+${dayObjectives.map((o, i) => `     Day ${i + 1}: Learner can ${o}`).join("\n")}
+   - Do NOT paraphrase, merge or replace these objectives with other content. (For a 1-day plan use only the Day 1 line.)`
+    : `1. Header & Performance Indicator(s):
+   - MANDATORY: Always use "Learner can:" prefix (DO NOT use "Learner will be able to:").
+   - If the lesson spans ${days} day(s)/lesson(s), YOU MUST INCLUDE ALL PERFORMANCE INDICATORS FOR EACH DAY in the 'performanceIndicator' string field, formatted as:
+     Day 1: Learner can: [Day 1 performance indicator]
+     Day 2: Learner can: [Day 2 performance indicator]
+     (For a 1-day plan, format as "Learner can: [performance indicator]")`;
 
   // ------------------------------------------------------------------
   // Robust JSON call: model fallback slots + re-sampling on malformed
@@ -167,6 +292,13 @@ app.post("/api/generate-plan", async (req, res) => {
           const code = String(e?.code ?? e?.status ?? '');
           const msg = String(e?.message ?? e);
           console.warn(`[AI:${label}] model=${slot.model} sample=${sample} failed: code=${code} ${msg.slice(0, 250)}`);
+          // Hard daily-quota exhaustion — will not clear during this request.
+          // Start the cooldown and abort the AI path immediately.
+          if (QUOTA_DEAD_PATTERN.test(msg)) {
+            QUOTA_EXHAUSTED_UNTIL = Date.now() + QUOTA_PAUSE_MS;
+            console.error("[AI] Daily quota exhausted — pausing AI attempts for 30 minutes.");
+            throw e;
+          }
           // Model no longer exists for this key → remember it, try next slot.
           const deadModel = /404|not_found|no longer available/i.test(`${code} ${msg}`) && /model/i.test(msg);
           if (deadModel) {
@@ -433,14 +565,10 @@ Generate the LESSON PLAN AND STUDY NOTES portion of a Learner Plan for the follo
 IMPORTANT: Exercises are generated separately — do NOT include any exercises or exercise arrays in your response.
 
 ${buildLessonParams(inputs)}
+${curriculumBlock}
 
 REQUIREMENTS:
-1. Header & Performance Indicator(s):
-   - MANDATORY: Always use "Learner can:" prefix (DO NOT use "Learner will be able to:").
-   - If the lesson spans ${days} day(s)/lesson(s), YOU MUST INCLUDE ALL PERFORMANCE INDICATORS FOR EACH DAY in the 'performanceIndicator' string field, formatted as:
-     Day 1: Learner can: [Day 1 performance indicator]
-     Day 2: Learner can: [Day 2 performance indicator]
-     (For a 1-day plan, format as "Learner can: [performance indicator]")
+${piRequirement}
 2. Teaching & Learning Materials (TLMs): 4-6 specific local materials.
 3. Core Competencies & Key Words: Automatically generate 3-5 specific NaCCA Core Competencies tailored to this subject and indicator (e.g. Critical Thinking and Problem Solving (CP), Communication and Collaboration (CC), Creativity and Innovation (CI), Digital Literacy (DL), Personal Development and Leadership (PL), Cultural Identity and Global Citizenship (CG)). Explain briefly how each competency is fostered in the lesson.
 4. Starter Phase (Phase 1): Warm-up activity, introduction, prior knowledge check.
@@ -460,7 +588,14 @@ Generate ONLY the learner exercise bank for DAY ${day} of the following lesson.
 IMPORTANT: Do NOT include lesson plans, notes, headers, or any other day's exercises — exercises for day ${day} only.
 
 ${buildLessonParams(inputs)}
-- FOCUS: Day ${day} of ${days} — all questions target THIS day's portion of the lesson content.
+${ctx ? `
+AUTHORITATIVE CURRICULUM CONTENT (official NaCCA guide for this exact indicator — this IS the actual lesson; follow it strictly and do NOT invent or substitute any other topic, even a related one):
+- Content Standard ${ctx.csCode}: ${ctx.csDesc}
+- DAY ${day} OBJECTIVE: Learner can ${dayObjectives[day - 1]}
+- Official curriculum examples to build these exercises around:
+${exemplarText || "  (none recorded — use realistic Ghanaian examples of exactly this content)"}
+` : ""}
+- FOCUS: Day ${day} of ${days} — every question must test THIS day's objective above, nothing else.
 
 REQUIREMENTS — exactly 10 items per tier (Exercise 1: questions 1-5; Exercise 2: questions 1-5):
 a) fillInBlanks: 10 items. Each question is a clear sentence with a "____" blank and the exact single answer. Tag each with exerciseNumber (1 or 2) and questionNumber (1 to 5).
