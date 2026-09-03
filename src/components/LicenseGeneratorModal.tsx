@@ -124,7 +124,7 @@ export const LicenseGeneratorModal: React.FC<LicenseGeneratorModalProps> = ({
                     <Crown className="w-3.5 h-3.5 text-amber-400" />
                     Premium License
                   </span>
-                  <span className="text-xs font-bold text-amber-400">GHC 150</span>
+                  <span className="text-xs font-bold text-amber-400">GHC 250</span>
                 </div>
                 <p className="text-[11px] text-slate-300">Whole Term Planning per Subject/Class</p>
               </button>
