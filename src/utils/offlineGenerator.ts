@@ -74,7 +74,16 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
     ? ((matchedIndicator as any).keyWords as string[])
     : extractKeyTerms(inputs.subject, `${indicatorDesc} ${exemplarText}`);
 
-  const topic = inputs.subStrand || inputs.strand || inputs.subject;
+  // Plain topic name for use inside sentences and questions. Rubric labels
+  // like "Sub-strand 1: NUMBER" belong in the plan HEADER only — lesson text
+  // must talk about the content, never about the plan's own structure.
+  const cleanLabel = (s: string) => (s || '').replace(/^(Sub-)?Strand\s+\d+\s*:?\s*/i, '').trim();
+  const prettyTopic = (s: string) => {
+    const c = cleanLabel(s);
+    // Single all-caps label ("NUMBER") reads better title-cased ("Number").
+    return c === c.toUpperCase() && !c.includes(' ') ? c.charAt(0).toUpperCase() + c.slice(1).toLowerCase() : c;
+  };
+  const topic = prettyTopic(inputs.subStrand) || prettyTopic(inputs.strand) || inputs.subject;
 
   // Drop vocabulary candidates that have no real definition (they would only
   // produce circular "Key subject terminology ..." filler downstream), then
@@ -86,37 +95,41 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
 
   // Helper to clean indicator description
   const cleanDesc = (desc: string) => desc.replace(/^(Learners?\s+will\s+be\s+able\s+to|Learners?\s+can)\s*:?\s*/i, '').trim();
+  // "Apply the ..." -> "apply the ..." so "Learner can apply ..." reads naturally
+  const lowerFirst = (s: string) => (s ? s.charAt(0).toLowerCase() + s.slice(1) : s);
+  // Strip trailing full stops so quoted objectives don't double up with the sentence period
+  const noEndPeriod = (s: string) => (s || '').replace(/\.+$/, '').trim();
 
   let siblingIndicators: string[] = [];
   if (matchedCS && matchedCS.indicators && matchedCS.indicators.length > 0) {
     siblingIndicators = matchedCS.indicators.map((i: any) => cleanDesc(i.description));
   }
 
-  // Construct Performance Indicator(s)
-  let performanceIndicator = '';
-  if (numDays === 1) {
-    performanceIndicator = `Learner can: ${cleanDesc(indicatorDesc)}`;
-  } else {
-    const dayIndicators: string[] = [];
-    for (let d = 1; d <= numDays; d++) {
-      let dayText = '';
-      if (siblingIndicators[d - 1]) {
-        dayText = siblingIndicators[d - 1];
-      } else if (d === 1) {
-        dayText = cleanDesc(indicatorDesc);
-      } else if (d === 2) {
-        dayText = `Demonstrate step-by-step application and problem solving for ${cleanDesc(indicatorDesc)}`;
-      } else if (d === 3) {
-        dayText = `Collaborate in group activities to analyze real-life scenarios related to ${cleanDesc(indicatorDesc)}`;
-      } else if (d === 4) {
-        dayText = `Independently solve tasks and evaluate understanding of ${cleanDesc(indicatorDesc)}`;
-      } else {
-        dayText = `Synthesize, review, and apply knowledge of ${cleanDesc(indicatorDesc)} in assessment exercises`;
-      }
-      dayIndicators.push(`Day ${d}: Learner can: ${dayText}`);
+  // Construct Performance Indicator(s) + plain per-day objectives (content,
+  // never rubric labels) used in the daily lesson plans.
+  const dayObjectives: string[] = [];
+  for (let d = 1; d <= numDays; d++) {
+    let dayText = '';
+    if (numDays === 1) {
+      dayText = cleanDesc(indicatorDesc);
+    } else if (siblingIndicators[d - 1]) {
+      dayText = siblingIndicators[d - 1];
+    } else if (d === 1) {
+      dayText = cleanDesc(indicatorDesc);
+    } else if (d === 2) {
+      dayText = `Demonstrate step-by-step application and problem solving for ${cleanDesc(indicatorDesc)}`;
+    } else if (d === 3) {
+      dayText = `Collaborate in group activities to analyze real-life scenarios related to ${cleanDesc(indicatorDesc)}`;
+    } else if (d === 4) {
+      dayText = `Independently solve tasks and evaluate understanding of ${cleanDesc(indicatorDesc)}`;
+    } else {
+      dayText = `Synthesize, review, and apply knowledge of ${cleanDesc(indicatorDesc)} in assessment exercises`;
     }
-    performanceIndicator = dayIndicators.join('\n');
+    dayObjectives.push(dayText);
   }
+  const performanceIndicator = numDays === 1
+    ? `Learner can: ${lowerFirst(cleanDesc(indicatorDesc))}`
+    : dayObjectives.map((t, i) => `Day ${i + 1}: Learner can: ${lowerFirst(t)}`).join('\n');
 
   // Automatically generated NaCCA Core Competencies
   const coreCompetencies = (inputs.coreCompetencies && inputs.coreCompetencies.length > 0)
@@ -124,9 +137,9 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
     : getAutoCoreCompetencies(inputs.subject, inputs.strand, inputs.subStrand);
 
   // Phase 1: Starter
-  const starterTeacher = `1. Welcome learners warmheartedly and review prior knowledge on previous topic related to ${inputs.strand}.
+  const starterTeacher = `1. Welcome learners warmheartedly and review what was covered in earlier lessons on ${topic}.
 2. Pose an engaging warm-up hook question or riddle on ${topic} to spark curiosity.
-3. State the lesson objectives clearly and explain why learning about ${inputs.indicator || topic} is important in everyday Ghanaian life.`;
+3. State the lesson objectives clearly and explain why learning about ${topic} is important in everyday Ghanaian life.`;
 
   const starterLearner = `1. Learners actively participate in warm-up activity and answer introductory questions.
 2. Learners listen attentively to the lesson goals and state what they expect to learn today.`;
@@ -140,7 +153,7 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
 
   const step2Learner = `Learners:\n1. Learners collaborate in groups, share ideas, discuss solutions, and record their findings on flipcharts/boards.\n2. Selected group leaders present their group work to the rest of the class.`;
 
-  const step3Teacher = `Teacher:\n1. Distribute individual practice tasks from the workbook on ${indicatorCode}.\n2. Observe individual learner execution and provide constructive real-time feedback.\n3. Call on representative learners to share their solutions on the chalkboard.`;
+  const step3Teacher = `Teacher:\n1. Distribute individual practice tasks from the workbook on ${topic}.\n2. Observe individual learner execution and provide constructive real-time feedback.\n3. Call on representative learners to share their solutions on the chalkboard.`;
 
   const step3Learner = `Learners:\n1. Learners work independently to complete assigned exercises in their exercise books.\n2. Learners peer-check and self-correct work under teacher direction.`;
 
@@ -155,7 +168,7 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
   // RCA Questions
   const rcaQuestions = {
     reflect: `Reflect: What was the most important concept or skill you mastered during our lessons on ${topic}?`,
-    connect: `Connect: How does what we learned about ${topic} connect to your previous knowledge in ${inputs.strand}?`,
+    connect: `Connect: How does what we learned about ${topic} connect to your previous knowledge in ${inputs.subject}?`,
     apply: `Apply: How can you apply the knowledge of ${topic} to solve a real-life problem at home, in school, or in your local community in Ghana?`
   };
 
@@ -168,7 +181,7 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
       heading: `1. Historical & Conceptual Context of ${topic}`,
       body: `Understanding the background and significance of ${topic} helps learners appreciate Ghana's heritage and historical development.`,
       bulletPoints: [
-        `Curriculum Objective (${indicatorCode}): ${indicatorDesc}`,
+        `Curriculum Objective: ${indicatorDesc}`,
         `Historical Significance: ${topic} plays an essential role in understanding past events, key people, and traditions in Ghana.`,
         `Core Vocabulary: Master key historical terms such as ${keywords.slice(0, 4).join(', ')}.`,
         `Civic & National Value: Learning about ${topic} fosters national identity, unity, patriotism, and community responsibility.`
@@ -197,7 +210,7 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
       heading: `1. Fundamentals & Core Rules of ${topic}`,
       body: `Understanding the essential principles of ${topic} allows learners to build accuracy, logical reasoning, and problem-solving speed.`,
       bulletPoints: [
-        `Curriculum Objective (${indicatorCode}): ${indicatorDesc}`,
+        `Curriculum Objective: ${indicatorDesc}`,
         `Primary Rule: Always follow a systematic, step-by-step procedure when working with ${topic}.`,
         `Standard Representation: Use clear diagrams, standard units, symbols, and mathematical/scientific notation.`,
         `Everyday Application: ${topic} is frequently used in local trading, measurement, computing, and environmental management in Ghana.`
@@ -229,9 +242,9 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
   ] : [
     {
       heading: `1. Core Concepts & Overview of ${topic}`,
-      body: `Mastering ${topic} under ${inputs.strand} provides learners with essential knowledge and practical skills.`,
+      body: `Mastering ${topic} in ${inputs.subject} provides learners with essential knowledge and practical skills.`,
       bulletPoints: [
-        `Curriculum Objective (${indicatorCode}): ${indicatorDesc}`,
+        `Curriculum Objective: ${indicatorDesc}`,
         `Key Vocabulary: Understand definitions for ${keywords.slice(0, 4).join(', ')}.`,
         `Practical Significance: Apply these concepts in daily school and community activities.`
       ]
@@ -258,13 +271,13 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
 
   const learnerNotes = {
     title: `LEARNER NOTES & STUDY SUMMARY: ${inputs.subject.toUpperCase()} - ${inputs.subStrand.toUpperCase()}`,
-    introduction: `Welcome to our study guide on ${topic} under ${inputs.strand}. In Ghana's National Standard-Based Curriculum (NSBC), mastering ${topic} provides you with foundational knowledge, logical reasoning skills, and practical tools for academic success and everyday decision-making in your community.`,
+    introduction: `Welcome to your study guide on ${topic} in ${inputs.subject}. In Ghana's National Standard-Based Curriculum (NSBC), mastering ${topic} provides you with foundational knowledge, logical reasoning skills, and practical tools for academic success and everyday decision-making in your community.`,
     keyDefinitions: keywords.map((kw, idx) => ({
       term: kw,
       definition: getTermDefinition(kw, inputs.subject, topic, idx, exemplarText)
     })),
     mainContentPoints,
-    summary: `SUMMARY & REVISION TAKEAWAY: ${topic} is an integral part of ${inputs.strand} (${inputs.contentStandard || 'NSBC Standard'}). To master this topic, regularly review your key definitions (${keywords.join(', ')}), practice all assigned exercises across the ${numDays} lesson day(s), and apply these principles in daily activities!`
+    summary: `SUMMARY & REVISION TAKEAWAY: ${topic} is an integral part of your ${inputs.subject} study. To master this topic, regularly review your key definitions (${keywords.join(', ')}), practice all assigned exercises across the ${numDays} lesson day(s), and apply these principles in daily activities!`
   };
 
   // Generate Multi-Day Exercises (2 FIBs, 2 MCQs, 2 Matching, 2 Application, 2 Diagram per day - 5 Qs each)
@@ -289,14 +302,14 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
       dayNumber: day,
       starter: {
         duration: '10 Mins',
-        teacherActivities: `1. (Day ${day}) Warmly welcome learners and review prior learning on ${topic}.\n2. Share Day ${day}'s key objective for ${indicatorCode}.\n3. Ask an engaging introductory hook question to spark curiosity.`,
+        teacherActivities: `1. (Day ${day}) Warmly welcome learners and review prior learning on ${topic}.\n2. Share Day ${day}'s learning objective: "Learner can: ${lowerFirst(noEndPeriod(dayObjectives[day - 1]))}".\n3. Ask an engaging introductory hook question to spark curiosity.`,
         learnerActivities: `1. Learners actively answer review questions from previous work.\n2. Learners share their thoughts on Day ${day}'s warm-up question.`
       },
       mainPhase: {
         duration: '40 Mins',
-        step1Teacher: `Teacher:\n1. (Day ${day} Demonstration) Introduce Day ${day}'s specific concept under ${topic} using ${tlms[0] || 'TLMs'}.\n2. Explicitly model problem-solving and historical/conceptual analysis step-by-step, highlighting key terms (${keywords.slice(0, 3).join(', ')}).`,
+        step1Teacher: `Teacher:\n1. (Day ${day} Demonstration) Introduce the day's focus: "${noEndPeriod(dayObjectives[day - 1])}" using ${tlms[0] || 'TLMs'}.\n2. Explicitly model the skill step-by-step, highlighting key terms (${keywords.slice(0, 3).join(', ')}).`,
         step1Learner: `Learners:\n1. Learners observe teacher demonstration attentively and write detailed notes in their exercise books.\n2. Learners ask clarifying questions.`,
-        step2Teacher: `Teacher:\n1. (Day ${day} Group Work) Assign group activity task #${day} on ${indicatorDesc}.\n2. Monitor group discussions and assess collaboration and critical thinking.`,
+        step2Teacher: `Teacher:\n1. (Day ${day} Group Work) Assign group activity task #${day}: ${lowerFirst(noEndPeriod(dayObjectives[day - 1]))}.\n2. Monitor group discussions and assess collaboration and critical thinking.`,
         step2Learner: `Learners:\n1. Learners collaborate in small groups to solve assigned tasks on flipcharts.\n2. Group leaders present their solutions to the class.`,
         step3Teacher: `Teacher:\n1. (Day ${day} Independent Practice) Assign Day ${day}'s exercises (MCQs, Fill-in-the-Blanks, and Matching Pairs).\n2. Provide targeted assistance to individual learners.`,
         step3Learner: `Learners:\n1. Learners independently complete Day ${day}'s exercises in their exercise books.`,
@@ -740,7 +753,7 @@ function generateDailyFillInBlanks(day: number, inputs: PlanFormInputs, keywords
       dayNumber: day,
       exerciseNumber: 1,
       questionNumber: 3,
-      ...fib(1, 3, `(Day ${day} • Exercise 1) Under ${inputs.strand}, the concept of "____" is vital for mastering ${topic}.`, getKw(2))
+      ...fib(1, 3, `(Day ${day} • Exercise 1) In your study of ${topic}, the concept of "____" is vital for accurate work in ${inputs.subject}.`, getKw(2))
     },
     {
       id: `fib_d${day}_ex1_q4`,
@@ -766,7 +779,7 @@ function generateDailyFillInBlanks(day: number, inputs: PlanFormInputs, keywords
       dayNumber: day,
       exerciseNumber: 2,
       questionNumber: 1,
-      ...fib(2, 1, `(Day ${day} • Exercise 2) In ${inputs.classLevel}, the primary standard taught under ${inputs.subStrand} is represented by "____".`, getKw(5))
+      ...fib(2, 1, `(Day ${day} • Exercise 2) In ${inputs.classLevel}, one of the key ideas you must master in ${topic} is "____".`, getKw(5))
     },
     {
       id: `fib_d${day}_ex2_q2`,
@@ -873,7 +886,7 @@ function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string
         D: `It has no application in ${inputs.subject}.`
       },
       correctOption: 'A',
-      explanation: `${getKw(1)} is a core principle studied under ${inputs.strand}.`
+      explanation: `${getKw(1)} is one of the key terms learners master in ${topic}.`
     },
     {
       id: `mcq_d${day}_ex1_q4`,
@@ -930,7 +943,7 @@ function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string
       questionNumber: 2,
       question: `(Day ${day} • Exercise 2) Which Teaching and Learning Material (TLM) is most effective for demonstrating ${topic}?`,
       options: {
-        A: `Real objects, charts, and models representing ${inputs.subStrand}.`,
+        A: `Real objects, charts, and models representing ${topic}.`,
         B: 'Unrelated foreign music recordings.',
         C: 'Empty unmarked papers with no instructions.',
         D: 'None of the above.'
@@ -945,15 +958,15 @@ function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string
           dayNumber: day,
           exerciseNumber: 2,
           questionNumber: 3,
-          question: `(Day ${day} • Exercise 2) How is ${getKw(3)} connected to ${inputs.strand}?`,
+          question: `(Day ${day} • Exercise 2) Which of the following best describes ${getKw(3)} as used in ${topic}?`,
           options: {
             A: getTermDefinition(getKw(3), inputs.subject, topic, 2),
-            B: 'It is completely unrelated to this strand.',
+            B: 'It is completely unrelated to this subject.',
             C: 'It is only used outside of Ghana.',
-            D: 'It is a mathematical error.'
+            D: 'It has no practical use in daily life.'
           },
           correctOption: 'A',
-          explanation: `${getKw(3)} directly supports learners in achieving the content standard.`
+          explanation: `${getKw(3)} is one of the key terms learners master in ${topic}.`
         },
     {
       id: `mcq_d${day}_ex2_q4`,
@@ -962,7 +975,7 @@ function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string
       questionNumber: 4,
       question: `(Day ${day} • Exercise 2) Which critical thinking question best reflects ${topic}?`,
       options: {
-        A: `Why is understanding ${inputs.subStrand} important for our community and nation?`,
+        A: `Why is understanding ${topic} important for our community and nation?`,
         B: 'What color is the blackboard in another school?',
         C: 'How many minutes until the bell rings for closing?',
         D: 'Who is the fastest runner in the district?'
@@ -1080,7 +1093,7 @@ function generateDailyApplicationExercises(day: number, inputs: PlanFormInputs, 
       questionNumber: 4,
       scenarioOrContext: `A farmer in a rural community in Ghana needs advice on managing resources effectively using knowledge of ${topic}.`,
       question: `(Day ${day} • Exercise 1) What practical advice will you give the farmer based on today's lesson on ${topic}?`,
-      sampleAnswer: `Apply logical planning, resource conservation, systematic recording, or scientific care as taught under ${inputs.strand}.`
+      sampleAnswer: `Apply logical planning, resource conservation, systematic recording, or scientific care as taught in ${inputs.subject}.`
     },
     {
       id: `app_d${day}_ex1_q5`,
@@ -1099,7 +1112,7 @@ function generateDailyApplicationExercises(day: number, inputs: PlanFormInputs, 
       dayNumber: day,
       exerciseNumber: 2,
       questionNumber: 1,
-      scenarioOrContext: `A local Ghanaian craftsman/trader wants to improve their efficiency using principles of ${inputs.subStrand}.`,
+      scenarioOrContext: `A local Ghanaian craftsman/trader wants to improve their efficiency using principles of ${topic}.`,
       question: `(Day ${day} • Exercise 2) How can the craftsman apply ${keywords[1] || topic} to make their work neater, faster, or more accurate?`,
       sampleAnswer: `Explain how structured measurements, systematic processes, or historical/scientific insights ensure quality output.`
     },
@@ -1295,7 +1308,7 @@ function generateDailyDiagramExercises(day: number, inputs: PlanFormInputs, keyw
         diagramPrompt: `Study the structural diagram below representing the core components of ${topic}. Identify the parts indicated by letters (A), (B), and (C).`,
         diagramAsciiOrDescription: `┌────────────────────────────────────────────────────────┐\n│  [ SYSTEM SCHEMATIC DIAGRAM: ${topic.toUpperCase()} ]   │\n│                                                        │\n│           ┌───────────────────────────┐                │\n│           │ Part (A): Input / Heading │                │\n│           └─────────────┬─────────────┘                │\n│                         ▼                              │\n│           ┌───────────────────────────┐                │\n│           │ Part (B): Process / Core  │                │\n│           └─────────────┬─────────────┘                │\n│                         ▼                              │\n│           ┌───────────────────────────┐                │\n│           │ Part (C): Output / Result │                │\n│           └───────────────────────────┘                │\n└────────────────────────────────────────────────────────┘`,
         question: `(Day ${day} • Exercise 1) Based on the diagram above, state the function of Part (A) and Part (B) in relation to ${topic}.`,
-        expectedAnswer: `Part (A) serves as the primary initiation/input component; Part (B) executes core processing/transformation according to principles of ${inputs.strand}.`
+        expectedAnswer: `Part (A) serves as the primary initiation/input component; Part (B) executes core processing/transformation according to principles of ${inputs.subject}.`
       },
       {
         id: `diag_d${day}_ex1_q2`,
@@ -1304,7 +1317,7 @@ function generateDailyDiagramExercises(day: number, inputs: PlanFormInputs, keyw
         questionNumber: 2,
         diagramCategory: 'Picture Identification',
         diagramTitle: `Scientific / Mathematical Model Identification (${topic})`,
-        diagramPrompt: `Analyze the visual model below and determine which concept under ${inputs.subStrand} it illustrates.`,
+        diagramPrompt: `Analyze the visual model below and determine which concept of ${topic} it illustrates.`,
         diagramAsciiOrDescription: `┌────────────────────────────────────────────────────────┐\n│  [ CONCEPTUAL MODEL BOX ]                              │\n│   Th (Thousands) │ H (Hundreds) │ T (Tens) │ O (Ones)  │\n│   [ ● ● ● ● ]    │ [ ● ● ]      │ [ ● ● ● ]│ [ ● ● ● ●]│\n│   Value = 4,234                                        │\n└────────────────────────────────────────────────────────┘`,
         question: `(Day ${day} • Exercise 1) Identify the mathematical or conceptual model shown in the box and write the exact value or rule it represents.`,
         expectedAnswer: `Place Value Chart / Conceptual Block Model representing standard positional notation.`
@@ -1385,7 +1398,7 @@ function generateDailyDiagramExercises(day: number, inputs: PlanFormInputs, keyw
         diagramPrompt: `Observe the map or structural layout diagram below.`,
         diagramAsciiOrDescription: `┌────────────────────────────────────────────────────────┐\n│  [ REGIONAL / STRUCTURAL OVERVIEW MAP ]                │\n│    North: Savannah Zone │ South: Coastal Zone / Forts  │\n│    Key Centers: Accra, Kumasi, Cape Coast, Tamale     │\n└────────────────────────────────────────────────────────┘`,
         question: `(Day ${day} • Exercise 2) Based on the layout, name two key geographic or structural landmarks relevant to ${topic}.`,
-        expectedAnswer: `Learners list the two appropriate landmarks and explain their significance under ${inputs.strand}.`
+        expectedAnswer: `Learners list the two appropriate landmarks and explain their significance in ${inputs.subject}.`
       },
       {
         id: `diag_d${day}_ex2_q3`,
