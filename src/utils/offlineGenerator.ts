@@ -4,10 +4,42 @@ import { getAutoCoreCompetencies } from './coreCompetencies';
 import { sanitizePerformanceIndicator } from './formatUtils';
 import { getNaCCACurriculumReference } from './naccaReferences';
 
-export function generateOfflinePlan(inputs: PlanFormInputs): LearnerPlanOutput {
+export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutput {
+  // Defensive normalisation — the server calls this with raw request bodies
+  // that may be missing or null fields. Never let a partial payload crash
+  // generation (on the server that would kill the whole process).
+  const str = (v: unknown, fb: string) => (typeof v === 'string' && v.trim() !== '' ? v : fb);
+  const num = (v: unknown, fb: number) => (typeof v === 'number' && isFinite(v) && v > 0 ? v : fb);
+  const inputs: PlanFormInputs = {
+    subject: str(rawInputs?.subject, 'Mathematics'),
+    strand: str(rawInputs?.strand, 'Strand 1'),
+    subStrand: str(rawInputs?.subStrand, 'General'),
+    contentStandard: str(rawInputs?.contentStandard, 'B4.1.1.1'),
+    indicator: str(rawInputs?.indicator, 'B4.1.1.1.1'),
+    classLevel: str(rawInputs?.classLevel, 'Basic 4'),
+    classSize: num(rawInputs?.classSize, 45),
+    duration: str(rawInputs?.duration, '60 Mins'),
+    numberOfDays: num(rawInputs?.numberOfDays, 4),
+    weekEnding: str(rawInputs?.weekEnding, ''),
+    schoolName: str(rawInputs?.schoolName, ''),
+    teacherName: str(rawInputs?.teacherName, ''),
+    nameOfHead: str(rawInputs?.nameOfHead, ''),
+    selectedDays: Array.isArray(rawInputs?.selectedDays) ? rawInputs!.selectedDays : undefined,
+    references: str(rawInputs?.references, ''),
+    coreCompetencies: Array.isArray(rawInputs?.coreCompetencies) ? rawInputs!.coreCompetencies : undefined,
+    additionalInstructions: str(rawInputs?.additionalInstructions, ''),
+    exerciseTypes: {
+      fillInBlanks: rawInputs?.exerciseTypes?.fillInBlanks !== false,
+      mcq: rawInputs?.exerciseTypes?.mcq !== false,
+      matching: rawInputs?.exerciseTypes?.matching !== false,
+      application: rawInputs?.exerciseTypes?.application !== false,
+      diagram: rawInputs?.exerciseTypes?.diagram !== false,
+    },
+  };
+
   // Find matching subject/indicator info if available
   const subj = GHANA_CURRICULUM_DATA.find(s => s.name.toLowerCase() === inputs.subject.toLowerCase()) || GHANA_CURRICULUM_DATA[0];
-  
+
   // Find matching indicator or fallback
   let matchedIndicator = null;
   let matchedCS: any = null;
@@ -28,9 +60,28 @@ export function generateOfflinePlan(inputs: PlanFormInputs): LearnerPlanOutput {
   const indicatorCode = matchedIndicator ? matchedIndicator.code : (inputs.indicator || 'B4.1.1.1.1');
   const indicatorDesc = matchedIndicator ? matchedIndicator.description : (inputs.indicator || 'Demonstrate understanding of key curriculum concepts.');
   const tlms = matchedIndicator?.suggestedTLMs || ['Charts and posters', 'Chalkboard / Whiteboard', 'Real-life physical objects (Realia)', 'Learner workbooks', 'Flashcards'];
-  const keywords = matchedIndicator?.keyWords || ['Concept', 'Definition', 'Structure', 'Application', 'Analysis', 'Example'];
+
+  // Real curriculum material: the indicator's official NaCCA exemplars.
+  // These contain worked examples (real numbers, real procedures) and are
+  // used to make the offline notes/exercises specific to the actual topic
+  // instead of generic filler.
+  const exemplarText = ((matchedIndicator as any)?.exemplars || []).map((e: any) => (typeof e === 'string' ? e : '')).join(' ');
+  const exemplarSentences = splitSentences(exemplarText);
+
+  // Key vocabulary: prefer the indicator's own keywords, then real subject
+  // terms found in the indicator description / exemplars.
+  let keywords: string[] = (Array.isArray((matchedIndicator as any)?.keyWords) && (matchedIndicator as any).keyWords.length > 0)
+    ? ((matchedIndicator as any).keyWords as string[])
+    : extractKeyTerms(inputs.subject, `${indicatorDesc} ${exemplarText}`);
 
   const topic = inputs.subStrand || inputs.strand || inputs.subject;
+
+  // Drop vocabulary candidates that have no real definition (they would only
+  // produce circular "Key subject terminology ..." filler downstream), then
+  // fall back to the generic list when nothing survives.
+  keywords = keywords.filter(t => !isCircularDefinition(getTermDefinition(t, inputs.subject, topic, 0, exemplarText)));
+  if (keywords.length === 0) keywords = ['Concept', 'Definition', 'Structure', 'Application', 'Analysis', 'Example'];
+  keywords = keywords.slice(0, 8);
   const numDays = Math.max(1, inputs.numberOfDays || 1);
 
   // Helper to clean indicator description
@@ -169,7 +220,12 @@ export function generateOfflinePlan(inputs: PlanFormInputs): LearnerPlanOutput {
         `Master all key terminology: ${keywords.slice(0, 3).join(', ')}.`,
         `Avoid rushing: double-check calculations, spelling, or scientific labels before turning in your exercise book.`
       ]
-    }
+    },
+    ...(exemplarSentences.length > 0 ? [{
+      heading: `4. Worked Example from the Official Curriculum`,
+      body: `Work through this example from the NaCCA curriculum guide, copying each step into your exercise book:`,
+      bulletPoints: exemplarSentences.slice(0, 3)
+    }] : [])
   ] : [
     {
       heading: `1. Core Concepts & Overview of ${topic}`,
@@ -205,7 +261,7 @@ export function generateOfflinePlan(inputs: PlanFormInputs): LearnerPlanOutput {
     introduction: `Welcome to our study guide on ${topic} under ${inputs.strand}. In Ghana's National Standard-Based Curriculum (NSBC), mastering ${topic} provides you with foundational knowledge, logical reasoning skills, and practical tools for academic success and everyday decision-making in your community.`,
     keyDefinitions: keywords.map((kw, idx) => ({
       term: kw,
-      definition: getTermDefinition(kw, inputs.subject, topic, idx)
+      definition: getTermDefinition(kw, inputs.subject, topic, idx, exemplarText)
     })),
     mainContentPoints,
     summary: `SUMMARY & REVISION TAKEAWAY: ${topic} is an integral part of ${inputs.strand} (${inputs.contentStandard || 'NSBC Standard'}). To master this topic, regularly review your key definitions (${keywords.join(', ')}), practice all assigned exercises across the ${numDays} lesson day(s), and apply these principles in daily activities!`
@@ -219,11 +275,11 @@ export function generateOfflinePlan(inputs: PlanFormInputs): LearnerPlanOutput {
   const diagram: ExerciseDiagram[] = [];
 
   for (let day = 1; day <= numDays; day++) {
-    fillInBlanks.push(...generateDailyFillInBlanks(day, inputs, keywords, topic));
-    mcqs.push(...generateDailyMCQs(day, inputs, keywords, topic));
-    matching.push(...generateDailyMatchingPairs(day, inputs, keywords, topic));
-    application.push(...generateDailyApplicationExercises(day, inputs, keywords, topic));
-    diagram.push(...generateDailyDiagramExercises(day, inputs, keywords, topic));
+    fillInBlanks.push(...generateDailyFillInBlanks(day, inputs, keywords, topic, exemplarSentences));
+    mcqs.push(...generateDailyMCQs(day, inputs, keywords, topic, exemplarSentences));
+    matching.push(...generateDailyMatchingPairs(day, inputs, keywords, topic, exemplarSentences, exemplarText));
+    application.push(...generateDailyApplicationExercises(day, inputs, keywords, topic, exemplarSentences));
+    diagram.push(...generateDailyDiagramExercises(day, inputs, keywords, topic, exemplarSentences));
   }
 
   // Generate Daily Lesson Plans
@@ -300,7 +356,7 @@ export function generateOfflinePlan(inputs: PlanFormInputs): LearnerPlanOutput {
   };
 }
 
-function getTermDefinition(term: string, subject: string, topic: string, index: number): string {
+function getTermDefinition(term: string, subject: string, topic: string, index: number, exemplarText: string = ''): string {
   const definitions: Record<string, string> = {
     // History Terms
     'History': 'The study and systematic recording of past human events, achievements, and developments.',
@@ -377,11 +433,251 @@ function getTermDefinition(term: string, subject: string, topic: string, index: 
     'Hardware': 'Physical components of a computer system that you can see and touch.',
     'Software': 'Programs and operating instructions used by a computer.',
     'Input Device': 'Hardware used to enter data into a computer (e.g. keyboard, mouse).',
-    'Output Device': 'Hardware used to display or print results from a computer (e.g. monitor, printer).'
+    'Output Device': 'Hardware used to display or print results from a computer (e.g. monitor, printer).',
+
+    // Core Science Terms
+    'Solid': 'A state of matter that has a definite shape and volume (e.g. ice, wood, stone).',
+    'Liquid': 'A state of matter that flows and takes the shape of its container (e.g. water, oil).',
+    'Gas': 'A state of matter that spreads out to fill its container (e.g. air, steam).',
+    'Matter': 'Anything that has mass and takes up space.',
+    'Mixture': 'A substance made by combining two or more materials without a chemical reaction (e.g. sand and sugar).',
+    'Solution': 'A mixture in which one substance is dissolved evenly in another (e.g. salt solution).',
+    'Energy': 'The ability to do work or cause change (e.g. light, heat, sound, chemical energy).',
+    'Force': 'A push or a pull acting on an object.',
+
+    // JHS Math Terms
+    'Standard Form': 'Writing a number using digits only (for example 2,408,321 instead of words).',
+    'Significant Figures': 'The meaningful digits in a number, starting from the first non-zero digit, used for approximation.',
+    'Decimal Places': 'The digits that appear after the decimal point in a decimal numeral.',
+    'Rounding': 'Approximating a number to the nearest place value (nearest ten, hundred, thousand, etc.).',
+    'Round Off': 'To replace a number by an approximation to the nearest specified place value.',
+    'Billion': 'A number equal to one thousand million (1,000,000,000).',
+    'Million': 'A number equal to one thousand thousand (1,000,000).',
+    'Hundred-Thousand': 'A place value equal to one hundred thousands (100,000).',
+    'Skip Count': 'Counting forwards or backwards in equal steps (for example 10, 20, 30 or 10,000, 20,000).',
+    'Order': 'Arranging numbers from smallest to largest (ascending) or largest to smallest (descending).',
+    'Integer': 'A whole number, positive or negative, with no fractional part.',
+    'Numeral': 'A symbol or group of symbols used to represent a number (for example 8 or VIII).',
+    'Number Words': 'The word form of a number (for example "one million" for 1,000,000).'
   };
 
   if (definitions[term]) return definitions[term];
+
+  // Derive a real definition from the official curriculum text if the term
+  // appears in the indicator description or its exemplars.
+  const derived = deriveDefinitionFromText(term, `${topic} ${exemplarText}`);
+  if (derived) return derived;
+
   return `Key subject terminology in ${subject} representing "${term}" as studied under ${topic}.`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Exemplar-driven content helpers.
+// The curriculum data carries official NaCCA "exemplars" for each indicator
+// (real worked examples, real numbers). These helpers turn that material
+// into topic-accurate fill-in-the-blank / MCQ / matching / diagram content
+// so the offline engine stops emitting generic filler. Everything here is
+// deterministic (no Math.random) so repeated generations are stable.
+// ─────────────────────────────────────────────────────────────────────────
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function splitSentences(text: string): string[] {
+  if (!text) return [];
+  const norm = text.replace(/\s+/g, ' ').trim();
+  const parts = norm.split(/(?<=[.!?])\s+/);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (let p of parts) {
+    p = p.trim();
+    // Strip list markers that the source text glues onto sentence fragments
+    // ("(i) ..." at the start, "iii." at the end).
+    p = p.replace(/^\s*\([ivx]+\)\s*/i, '').replace(/\s*\(?[ivx]+\)?\.\s*$/i, '').trim();
+    if (p.length < 25) continue;
+    if (!/[a-zA-Z]{3}/.test(p)) continue;
+    const key = p.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+    if (out.length >= 60) break;
+  }
+  return out;
+}
+
+interface ClozeSpan { sentence: string; blanked: string; answer: string; }
+
+function findClozeSpan(sentence: string, terms: string[]): ClozeSpan | null {
+  // Prefer a substantial number (with or without a unit word).
+  const matches = [...sentence.matchAll(/(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(\s*(?:billion|million|thousand|percent|degrees?))?/g)];
+  matches.sort((a, b) => b[0].length - a[0].length);
+  for (const m of matches) {
+    const span = m[0].trim();
+    const digits = span.replace(/[^\d.]/g, '');
+    if (digits.length < 3) continue; // skip list markers like "i." or trivial counts
+    if (sentence.split(span).length - 1 > 1) continue; // answer would stay visible
+    const blanked = sentence.replace(m[0], '____');
+    if (/^\s*____[a-zA-Z]*\)/.test(blanked)) continue; // blank inside a fragment like "4.5kg)"
+    if (blanked.length > 20 && blanked !== sentence) return { sentence, blanked, answer: span };
+  }
+  // Otherwise blank a real subject term (singular or plural, exactly once).
+  for (const t of terms) {
+    if (!t) continue;
+    const re = new RegExp(`\\b(${escapeRegExp(t)}s?)\\b`, 'gi');
+    const hits = sentence.match(re);
+    if (!hits || new Set(hits.map(h => h.toLowerCase())).size > 1) continue;
+    if (hits.length > 1) continue;
+    const blanked = sentence.replace(re, '____');
+    if (/^\s*____[a-zA-Z]*\)/.test(blanked)) continue;
+    if (blanked.length > 20) return { sentence, blanked, answer: hits[0] };
+  }
+  return null;
+}
+
+function numberDistractors(answer: string): string[] {
+  const m = answer.match(/(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)/);
+  if (!m) return [];
+  const numPart = m[1];
+  const unit = answer.replace(numPart, '').trim();
+  const raw = numPart.replace(/,/g, '');
+  const isFloat = raw.includes('.');
+  const base = isFloat ? parseFloat(raw) : parseInt(raw, 10);
+  if (!isFinite(base) || base <= 0) return [];
+  const out = new Set<string>();
+  const add = (n: number) => {
+    if (!isFinite(n) || n <= 0 || n === base) return;
+    out.add(isFloat ? String(n) : Math.round(n).toLocaleString('en-US'));
+  };
+  const scale = base >= 1000 ? Math.max(1, Math.round(base / 100)) : Math.max(1, Math.round(base / 10));
+  add(base + scale);
+  add(base - scale);
+  add(base * 10);
+  add(base / 10 >= 1 ? Math.round(base / 10) : base + scale * 2);
+  return Array.from(out).slice(0, 3).map(s => (unit ? `${s} ${unit}` : s));
+}
+
+function termDistractors(answer: string, terms: string[]): string[] {
+  const out: string[] = [];
+  // Morphological twins (liquids/Liquid) are not valid distractors.
+  const stem = answer.toLowerCase().replace(/s$/, '');
+  for (const t of terms) {
+    if (!t || t.toLowerCase() === answer.toLowerCase()) continue;
+    if (t.toLowerCase().replace(/s$/, '') === stem) continue;
+    out.push(t);
+    if (out.length >= 3) break;
+  }
+  const fillers = ['An unrelated term from another strand', 'A term not covered in this lesson', 'A vocabulary word from a different topic'];
+  let fi = 0;
+  while (out.length < 3 && fi < fillers.length) out.push(fillers[fi++]);
+  return out;
+}
+
+function buildClozeMCQ(day: number, ex: number, q: number, cloze: ClozeSpan, distractors: string[]): ExerciseMCQ {
+  const uniq: string[] = [cloze.answer];
+  for (const d of distractors) {
+    if (uniq.length >= 4) break;
+    if (!uniq.some(u => u.toLowerCase() === d.toLowerCase())) uniq.push(d);
+  }
+  const pads = ['None of these', 'A value not shown in the curriculum example', 'An unrelated figure from another strand'];
+  let pi = 0;
+  while (uniq.length < 4 && pi < pads.length) uniq.push(pads[pi++]);
+  const all = uniq.slice(0, 4);
+  const shift = (day * 3 + ex * 2 + q) % all.length;
+  const shuffled = all.slice(shift).concat(all.slice(0, shift));
+  const letters = ['A', 'B', 'C', 'D'] as const;
+  return {
+    id: `mcq_cloze_d${day}_ex${ex}_q${q}`,
+    dayNumber: day,
+    exerciseNumber: ex,
+    questionNumber: q,
+    question: `(Day ${day} • Exercise ${ex}) Complete the statement with the correct option: "${cloze.blanked}"`,
+    options: { A: shuffled[0], B: shuffled[1], C: shuffled[2], D: shuffled[3] },
+    correctOption: letters[shuffled.indexOf(cloze.answer)],
+    explanation: `The official curriculum example reads: "${cloze.sentence}"`
+  };
+}
+
+const SUBJECT_TERM_SCANS: Record<string, string[]> = {
+  math: ['Place Value', 'Standard Form', 'Significant Figures', 'Significant Figure', 'Decimal Places', 'Decimal Place', 'Decimal Numerals', 'Decimals', 'Rounding', 'Round Off', 'Whole Numbers', 'Integers', 'Number Words', 'Numerals', 'Billion', 'Million', 'Hundred-Thousand', 'Thousands', 'Hundreds', 'Expanded Form', 'Digits', 'Digit', 'Compare', 'Order', 'Skip Count', 'Addition', 'Subtraction', 'Multiplication', 'Division', 'Fractions', 'Fraction', 'Percentage', 'Percent', 'Ratio', 'Proportion', 'Area', 'Perimeter', 'Volume', 'Angle', 'Triangle', 'Circle', 'Square', 'Rectangle', 'Polygon', 'Symmetry', 'Frequency', 'Histogram', 'Bar Chart', 'Pie Chart', 'Mode', 'Mean', 'Median', 'Range', 'Probability', 'Sample Space', 'Sequence', 'Pattern', 'Algebraic Expression', 'Equation', 'Formula', 'Estimate', 'Estimation', 'Scale', 'Bearing', 'Currency', 'Mass', 'Length', 'Temperature', 'Capacity', 'Rate', 'Speed'],
+  science: ['Photosynthesis', 'Chlorophyll', 'Plant', 'Plants', 'Cell', 'Cells', 'Organism', 'Organisms', 'Habitat', 'Ecosystem', 'Biodiversity', 'Matter', 'Energy', 'Force', 'Motion', 'Density', 'Solubility', 'Soluble', 'Insoluble', 'States of Matter', 'Solid', 'Liquid', 'Gas', 'Acid', 'Base', 'Circuit', 'Conductor', 'Insulator', 'Magnet', 'Magnetic', 'Weather', 'Climate', 'Soil', 'Water', 'Air', 'Nutrition', 'Digestion', 'Respiration', 'Reproduction', 'Vertebrates', 'Invertebrates', 'Flowering Plants', 'Seed', 'Seeds', 'Root', 'Stem', 'Leaf', 'Leaves', 'Flower', 'Fruit', 'Food Chain', 'Food Web', 'Pollution', 'Conservation', 'Recycling', 'Hygiene', 'Sanitation', 'Disease', 'Diseases', 'Virus', 'Bacteria', 'Nutrients', 'Carbohydrates', 'Protein', 'Vitamins', 'Minerals', 'Skeleton', 'Muscles', 'Organs', 'Environment'],
+  english: ['Vocabulary', 'Grammar', 'Tense', 'Tenses', 'Subject', 'Predicate', 'Noun', 'Nouns', 'Verb', 'Verbs', 'Adjective', 'Adjectives', 'Adverb', 'Adverbs', 'Sentence', 'Sentences', 'Paragraph', 'Reading', 'Comprehension', 'Spelling', 'Pronunciation', 'Composition', 'Dialogue', 'Idiom', 'Synonyms', 'Antonyms', 'Phonics', 'Sight Words', 'Literacy', 'Fluency', 'Audience', 'Tone', 'Style', 'Literature', 'Poem', 'Poetry', 'Prose', 'Fable', 'Folk Tale', 'Character', 'Plot', 'Moral', 'Theme', 'Inference', 'Summary', 'Retelling', 'Punctuation', 'Capitalisation', 'Vowel', 'Consonant', 'Phrases', 'Clause', 'Clauses', 'Prefix', 'Suffix', 'Root Word', 'Compound Word', 'Homophones'],
+  computing: ['Hardware', 'Software', 'Input Device', 'Output Device', 'Processor', 'Memory', 'Storage', 'Internet', 'Network', 'Computer', 'System Unit', 'Keyboard', 'Monitor', 'Mouse', 'Printer', 'Algorithm', 'Flowchart', 'Program', 'Data', 'Information', 'Cyber Security', 'Operating System', 'Application Software', 'Utility Software', 'Icon', 'Window', 'File', 'Folder', 'Search Engine', 'Website', 'Email', 'Attachment', 'Password', 'Account', 'Device', 'Sensors', 'Robots', 'Automation'],
+  generic: ['Concept', 'Principle', 'Method', 'Procedure', 'System', 'Process', 'Feature', 'Element', 'Component', 'Structure', 'Function', 'Application', 'Analysis', 'Evaluation', 'Strategy', 'Technique', 'Tool', 'Skill', 'Knowledge', 'Understanding']
+};
+
+function extractKeyTerms(subject: string, text: string): string[] {
+  if (!text) return [];
+  const s = (subject || '').toLowerCase();
+  const lists: string[][] = [];
+  if (s.includes('math')) lists.push(SUBJECT_TERM_SCANS.math);
+  if (s.includes('sci')) lists.push(SUBJECT_TERM_SCANS.science);
+  if (s.includes('english') || s.includes('language')) lists.push(SUBJECT_TERM_SCANS.english);
+  if (s.includes('comput') || s.includes('ict')) lists.push(SUBJECT_TERM_SCANS.computing);
+  lists.push(SUBJECT_TERM_SCANS.generic);
+  const seen = new Set<string>();
+  const found: string[] = [];
+  const sorted = lists.flat().sort((a, b) => b.length - a.length);
+  for (const term of sorted) {
+    const key = term.toLowerCase();
+    if (seen.has(key)) continue;
+    // s? = also match the plural form in the source text.
+    if (new RegExp(`\\b${escapeRegExp(term)}s?\\b`, 'i').test(text)) {
+      seen.add(key);
+      found.push(term);
+      if (found.length >= 8) break;
+    }
+  }
+  return found;
+}
+
+// Derive a definition from the curriculum text: only accept a whole
+// sentence that STARTS with the term (otherwise the capture is just a
+// mid-sentence fragment, not a definition).
+function deriveDefinitionFromText(term: string, text: string): string | null {
+  if (!term || !text) return null;
+  for (const s of splitSentences(text)) {
+    let t = s.replace(/^(the|a|an)\s+/i, '');
+    if (!new RegExp(`^${escapeRegExp(term)}s?\\b`, 'i').test(t)) continue;
+    if (t.length < 30) continue;
+    if (/\b[a-z]\.$/.test(t)) continue; // truncated by an initial like "i." or "e."
+    if (t.length > 160) t = t.slice(0, 157).replace(/\s+\S*$/, '') + '...';
+    return t.charAt(0).toUpperCase() + t.slice(1);
+  }
+  return null;
+}
+
+const isCircularDefinition = (d: string) => /^Key subject terminology in .+ representing ".*" as studied under/.test(d);
+
+function findChartNumber(text: string): string | null {
+  if (!text) return null;
+  const grouped = text.match(/\d{1,3}(?:,\d{3})+/g) || [];
+  for (const g of grouped) {
+    const d = g.replace(/,/g, '');
+    if (d.length >= 4 && d.length <= 9) return g;
+  }
+  const plain = text.match(/\b\d{4,9}\b/g) || [];
+  return plain.length > 0 ? plain[0] : null;
+}
+
+function buildPlaceValueChart(num: string): { chart: string; question: string; expectedAnswer: string } | null {
+  const digits = num.replace(/,/g, '');
+  if (!/^\d{3,10}$/.test(digits)) return null;
+  const names = ['Ones', 'Tens', 'Hundreds', 'Thousands', 'Ten-Thousands', 'Hundred-Thousands', 'Millions', 'Ten-Millions', 'Hundred-Millions', 'Billions'];
+  const letters = 'ABCDEFGH'.split('');
+  const reversed = digits.split('').reverse();
+  const rows: string[] = [];
+  for (let i = 0; i < reversed.length; i++) {
+    const d = parseInt(reversed[i], 10);
+    const value = d * Math.pow(10, i);
+    rows.push(`│  (${letters[i]}) ${d} is in the ${names[i]} place : value ${value.toLocaleString('en-US')}`);
+  }
+  const chart = `┌──────────────────────────────────────────────────────────────┐\n│  [ PLACE VALUE CHART: ${num} ]\n` + rows.join('\n') + `\n└──────────────────────────────────────────────────────────────┘`;
+  const top = digits.length - 1;
+  const topValue = parseInt(digits[0], 10) * Math.pow(10, top);
+  return {
+    chart,
+    question: `Write the place value of each digit in ${num}. Which letter points to the digit with the GREATEST value, and what is that value?`,
+    expectedAnswer: `The greatest value is in the ${names[top]} place: ${digits[0]} x ${Math.pow(10, top).toLocaleString('en-US')} = ${topValue.toLocaleString('en-US')}.`
+  };
 }
 
 // Helper to check if class level is lower primary / early childhood
@@ -391,12 +687,38 @@ function isLowerClassLevel(classLevel: string): boolean {
 }
 
 // Generate 2 FIB Exercises (5 Questions each = 10 questions) for a specific Day
-function generateDailyFillInBlanks(day: number, inputs: PlanFormInputs, keywords: string[], topic: string): ExerciseFillInBlank[] {
+function generateDailyFillInBlanks(day: number, inputs: PlanFormInputs, keywords: string[], topic: string, sentences: string[] = []): ExerciseFillInBlank[] {
   const safeKeywords = (keywords && keywords.length > 0)
     ? keywords
     : ['Concept', 'Principle', 'Method', 'Application', 'Analysis', 'Evaluation', 'Structure', 'Function', 'Process', 'System'];
 
   const getKw = (offset: number) => safeKeywords[(day * 3 + offset) % safeKeywords.length];
+
+  // Cloze blanks taken from the official NaCCA exemplar sentences for this
+  // indicator (each sentence used at most once per day, deterministically).
+  const realClozes: ClozeSpan[] = [];
+  for (const s of sentences) {
+    const c = findClozeSpan(s, safeKeywords);
+    if (c) realClozes.push(c);
+  }
+  const usedSentences = new Set<string>();
+  const takeCloze = (ex: number, qn: number): ClozeSpan | null => {
+    if (realClozes.length === 0) return null;
+    const start = (day + ex + qn) % realClozes.length;
+    for (let k = 0; k < realClozes.length; k++) {
+      const c = realClozes[(start + k) % realClozes.length];
+      if (!usedSentences.has(c.sentence)) { usedSentences.add(c.sentence); return c; }
+    }
+    return null;
+  };
+  const fib = (ex: number, qn: number, fbQuestion: string, fbAnswer: string): { question: string; blankAnswer: string } => {
+    const c = takeCloze(ex, qn);
+    if (c) return {
+      question: `(Day ${day} • Exercise ${ex}) Fill in the blank from the curriculum example: "${c.blanked}"`,
+      blankAnswer: c.answer
+    };
+    return { question: fbQuestion, blankAnswer: fbAnswer };
+  };
 
   const ex1: ExerciseFillInBlank[] = [
     {
@@ -404,24 +726,21 @@ function generateDailyFillInBlanks(day: number, inputs: PlanFormInputs, keywords
       dayNumber: day,
       exerciseNumber: 1,
       questionNumber: 1,
-      question: `(Day ${day} • Exercise 1) In our study of ${topic}, the core term "____" is defined as: ${getTermDefinition(getKw(0), inputs.subject, topic, 0)}.`,
-      blankAnswer: getKw(0)
+      ...fib(1, 1, `(Day ${day} • Exercise 1) In our study of ${topic}, the core term "____" is defined as: ${getTermDefinition(getKw(0), inputs.subject, topic, 0)}`, getKw(0))
     },
     {
       id: `fib_d${day}_ex1_q2`,
       dayNumber: day,
       exerciseNumber: 1,
       questionNumber: 2,
-      question: `(Day ${day} • Exercise 1) In ${inputs.subject}, understanding "____" helps learners solve classroom and practical exercises accurately.`,
-      blankAnswer: getKw(1)
+      ...fib(1, 2, `(Day ${day} • Exercise 1) In ${inputs.subject}, understanding "____" helps learners solve classroom and practical exercises accurately.`, getKw(1))
     },
     {
       id: `fib_d${day}_ex1_q3`,
       dayNumber: day,
       exerciseNumber: 1,
       questionNumber: 3,
-      question: `(Day ${day} • Exercise 1) Under ${inputs.strand}, the concept of "____" is vital for mastering ${topic}.`,
-      blankAnswer: getKw(2)
+      ...fib(1, 3, `(Day ${day} • Exercise 1) Under ${inputs.strand}, the concept of "____" is vital for mastering ${topic}.`, getKw(2))
     },
     {
       id: `fib_d${day}_ex1_q4`,
@@ -447,24 +766,21 @@ function generateDailyFillInBlanks(day: number, inputs: PlanFormInputs, keywords
       dayNumber: day,
       exerciseNumber: 2,
       questionNumber: 1,
-      question: `(Day ${day} • Exercise 2) In ${inputs.classLevel}, the primary standard taught under ${inputs.subStrand} is represented by "____".`,
-      blankAnswer: getKw(5)
+      ...fib(2, 1, `(Day ${day} • Exercise 2) In ${inputs.classLevel}, the primary standard taught under ${inputs.subStrand} is represented by "____".`, getKw(5))
     },
     {
       id: `fib_d${day}_ex2_q2`,
       dayNumber: day,
       exerciseNumber: 2,
       questionNumber: 2,
-      question: `(Day ${day} • Exercise 2) During lesson demonstrations on ${topic}, the key term "____" describes the primary operation or rule.`,
-      blankAnswer: getKw(6)
+      ...fib(2, 2, `(Day ${day} • Exercise 2) During lesson demonstrations on ${topic}, the key term "____" describes the primary operation or rule.`, getKw(6))
     },
     {
       id: `fib_d${day}_ex2_q3`,
       dayNumber: day,
       exerciseNumber: 2,
       questionNumber: 3,
-      question: `(Day ${day} • Exercise 2) To check if an answer is correct in ${inputs.subject}, learners evaluate "____".`,
-      blankAnswer: getKw(7)
+      ...fib(2, 3, `(Day ${day} • Exercise 2) To check if an answer is correct in ${inputs.subject}, learners evaluate "____".`, getKw(7))
     },
     {
       id: `fib_d${day}_ex2_q4`,
@@ -488,29 +804,47 @@ function generateDailyFillInBlanks(day: number, inputs: PlanFormInputs, keywords
 }
 
 // Generate 2 MCQ Exercises (5 Questions each = 10 questions) for a specific Day
-function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string[], topic: string): ExerciseMCQ[] {
+function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string[], topic: string, sentences: string[] = []): ExerciseMCQ[] {
   const safeKeywords = (keywords && keywords.length > 0)
     ? keywords
     : ['Concept', 'Principle', 'Method', 'Application', 'Analysis', 'Evaluation', 'Structure', 'Function', 'Process', 'System'];
 
   const getKw = (offset: number) => safeKeywords[(day * 3 + offset) % safeKeywords.length];
 
+  // Real MCQs: cloze the official exemplar sentences with plausible
+  // distractors (deterministic rotation, each sentence at most once per day).
+  const mcqClozes: ClozeSpan[] = [];
+  const mcqSeen = new Set<string>();
+  for (const s of sentences) {
+    const c = findClozeSpan(s, safeKeywords);
+    if (c && !mcqSeen.has(c.sentence)) { mcqSeen.add(c.sentence); mcqClozes.push(c); }
+  }
+  const mcqIdx1 = (day * 5 + 7) % mcqClozes.length;
+  const pick1 = mcqClozes.length > 0 ? mcqClozes[mcqIdx1] : null;
+  const pick2 = mcqClozes.length > 1 ? mcqClozes[(mcqIdx1 + 1) % mcqClozes.length] : null;
+  const dFor = (c: ClozeSpan) =>
+    /^\d/.test(c.answer.replace(',', ''))
+      ? numberDistractors(c.answer)
+      : termDistractors(c.answer, safeKeywords);
+
   const ex1: ExerciseMCQ[] = [
-    {
-      id: `mcq_d${day}_ex1_q1`,
-      dayNumber: day,
-      exerciseNumber: 1,
-      questionNumber: 1,
-      question: `(Day ${day} • Exercise 1) What is the primary definition or meaning of ${getKw(0)} in ${inputs.subject}?`,
-      options: {
-        A: getTermDefinition(getKw(0), inputs.subject, topic, 0),
-        B: 'An unrelated concept not included in the Ghana NSBC syllabus.',
-        C: 'A tool used exclusively for weather monitoring.',
-        D: 'None of the above.'
-      },
-      correctOption: 'A',
-      explanation: `${getKw(0)} is an essential vocabulary term in ${inputs.subject} under ${topic}.`
-    },
+    pick1
+      ? buildClozeMCQ(day, 1, 1, pick1, dFor(pick1))
+      : {
+          id: `mcq_d${day}_ex1_q1`,
+          dayNumber: day,
+          exerciseNumber: 1,
+          questionNumber: 1,
+          question: `(Day ${day} • Exercise 1) What is the primary definition or meaning of ${getKw(0)} in ${inputs.subject}?`,
+          options: {
+            A: getTermDefinition(getKw(0), inputs.subject, topic, 0),
+            B: 'An unrelated concept not included in the Ghana NSBC syllabus.',
+            C: 'A tool used exclusively for weather monitoring.',
+            D: 'None of the above.'
+          },
+          correctOption: 'A',
+          explanation: `${getKw(0)} is an essential vocabulary term in ${inputs.subject} under ${topic}.`
+        },
     {
       id: `mcq_d${day}_ex1_q2`,
       dayNumber: day,
@@ -604,21 +938,23 @@ function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string
       correctOption: 'A',
       explanation: 'Concrete TLMs help learners bridge the gap between abstract concepts and real-world understanding.'
     },
-    {
-      id: `mcq_d${day}_ex2_q3`,
-      dayNumber: day,
-      exerciseNumber: 2,
-      questionNumber: 3,
-      question: `(Day ${day} • Exercise 2) How is ${getKw(3)} connected to ${inputs.strand}?`,
-      options: {
-        A: getTermDefinition(getKw(3), inputs.subject, topic, 2),
-        B: 'It is completely unrelated to this strand.',
-        C: 'It is only used outside of Ghana.',
-        D: 'It is a mathematical error.'
-      },
-      correctOption: 'A',
-      explanation: `${getKw(3)} directly supports learners in achieving the content standard.`
-    },
+    pick2
+      ? buildClozeMCQ(day, 2, 3, pick2, dFor(pick2))
+      : {
+          id: `mcq_d${day}_ex2_q3`,
+          dayNumber: day,
+          exerciseNumber: 2,
+          questionNumber: 3,
+          question: `(Day ${day} • Exercise 2) How is ${getKw(3)} connected to ${inputs.strand}?`,
+          options: {
+            A: getTermDefinition(getKw(3), inputs.subject, topic, 2),
+            B: 'It is completely unrelated to this strand.',
+            C: 'It is only used outside of Ghana.',
+            D: 'It is a mathematical error.'
+          },
+          correctOption: 'A',
+          explanation: `${getKw(3)} directly supports learners in achieving the content standard.`
+        },
     {
       id: `mcq_d${day}_ex2_q4`,
       dayNumber: day,
@@ -655,115 +991,57 @@ function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string
 }
 
 // Generate 2 Matching Column Exercises (5 Pairs each = 10 pairs) for a specific Day
-function generateDailyMatchingPairs(day: number, inputs: PlanFormInputs, keywords: string[], topic: string): ExerciseMatchingPair[] {
+function generateDailyMatchingPairs(day: number, inputs: PlanFormInputs, keywords: string[], topic: string, sentences: string[] = [], exemplarText: string = ''): ExerciseMatchingPair[] {
   const safeKeywords = (keywords && keywords.length > 0)
     ? keywords
     : ['Concept', 'Principle', 'Method', 'Application', 'Analysis', 'Evaluation', 'Structure', 'Function', 'Process', 'System'];
 
   const getKw = (offset: number) => safeKeywords[(day * 3 + offset) % safeKeywords.length];
+  const def = (kw: string, idx: number) => getTermDefinition(kw, inputs.subject, topic, idx, exemplarText);
 
-  const ex1: ExerciseMatchingPair[] = [
-    {
-      id: `match_d${day}_ex1_q1`,
-      dayNumber: day,
-      exerciseNumber: 1,
-      questionNumber: 1,
-      itemA: `${getKw(0)}`,
-      itemB: getTermDefinition(getKw(0), inputs.subject, topic, 0),
-      matchKey: getTermDefinition(getKw(0), inputs.subject, topic, 0)
-    },
-    {
-      id: `match_d${day}_ex1_q2`,
-      dayNumber: day,
-      exerciseNumber: 1,
-      questionNumber: 2,
-      itemA: `${getKw(1)}`,
-      itemB: getTermDefinition(getKw(1), inputs.subject, topic, 1),
-      matchKey: getTermDefinition(getKw(1), inputs.subject, topic, 1)
-    },
-    {
-      id: `match_d${day}_ex1_q3`,
-      dayNumber: day,
-      exerciseNumber: 1,
-      questionNumber: 3,
-      itemA: `${getKw(2)}`,
-      itemB: getTermDefinition(getKw(2), inputs.subject, topic, 2),
-      matchKey: getTermDefinition(getKw(2), inputs.subject, topic, 2)
-    },
-    {
-      id: `match_d${day}_ex1_q4`,
-      dayNumber: day,
-      exerciseNumber: 1,
-      questionNumber: 4,
-      itemA: `Topic: ${topic}`,
-      itemB: `Core lesson focus under ${inputs.strand}`,
-      matchKey: `Core lesson focus under ${inputs.strand}`
-    },
-    {
-      id: `match_d${day}_ex1_q5`,
-      dayNumber: day,
-      exerciseNumber: 1,
-      questionNumber: 5,
-      itemA: `${inputs.subject} (${inputs.classLevel})`,
-      itemB: `Ghana Standard-Based Curriculum (NSBC)`,
-      matchKey: `Ghana Standard-Based Curriculum (NSBC)`
-    }
+  // Build 10 distinct term <-> definition pairs. Indicator keywords come
+  // first; dictionary-backed filler terms for the subject top the list up.
+  // Circular "Key subject terminology ..." fallbacks are skipped so no
+  // meaningless pairs are ever shown.
+  const pairs: { term: string; definition: string }[] = [];
+  const addPair = (term: string) => {
+    if (!term || pairs.some(p => p.term.toLowerCase() === term.toLowerCase())) return;
+    const d = def(term, pairs.length);
+    if (isCircularDefinition(d)) return;
+    pairs.push({ term, definition: d });
+  };
+  for (let off = 0; pairs.length < 10 && off < 40; off++) addPair(getKw(off));
+  const subj = (inputs.subject || '').toLowerCase();
+  // Filler terms all have real dictionary-backed definitions.
+  const fillers: string[] = [
+    ...(/math/i.test(subj) ? ['Thousands', 'Digit', 'Expanded Form', 'Compare', 'Sum', 'Difference'] : []),
+    ...(/sci/i.test(subj) ? ['Solid', 'Liquid', 'Gas', 'Mixture', 'Solution', 'Photosynthesis', 'Chlorophyll', 'Roots', 'Hygiene', 'Sanitation'] : []),
+    ...(/comput|ict/i.test(subj) ? ['Hardware', 'Software', 'Input Device', 'Output Device'] : []),
+    ...(/hist|social|owop|rme|culture/i.test(subj) ? ['Oral Tradition', 'Migration', 'Ethnic Group', 'Heritage', 'Colonial Rule'] : []),
+    ...['Algorithm', 'Environment', 'Photosynthesis', 'Hardware', 'Oral Tradition', 'Migration', 'Thousands', 'Digit', 'Place Value', 'Hygiene', 'Energy']
   ];
+  for (const f of fillers) { if (pairs.length >= 10) break; addPair(f); }
 
-  const ex2: ExerciseMatchingPair[] = [
-    {
-      id: `match_d${day}_ex2_q1`,
-      dayNumber: day,
-      exerciseNumber: 2,
-      questionNumber: 1,
-      itemA: `${getKw(3)}`,
-      itemB: getTermDefinition(getKw(3), inputs.subject, topic, 3),
-      matchKey: getTermDefinition(getKw(3), inputs.subject, topic, 3)
-    },
-    {
-      id: `match_d${day}_ex2_q2`,
-      dayNumber: day,
-      exerciseNumber: 2,
-      questionNumber: 2,
-      itemA: `${getKw(4)}`,
-      itemB: getTermDefinition(getKw(4), inputs.subject, topic, 4),
-      matchKey: getTermDefinition(getKw(4), inputs.subject, topic, 4)
-    },
-    {
-      id: `match_d${day}_ex2_q3`,
-      dayNumber: day,
-      exerciseNumber: 2,
-      questionNumber: 3,
-      itemA: `Content Standard ${inputs.contentStandard}`,
-      itemB: `Prescribed learning milestone for ${inputs.subStrand}`,
-      matchKey: `Prescribed learning milestone for ${inputs.subStrand}`
-    },
-    {
-      id: `match_d${day}_ex2_q4`,
-      dayNumber: day,
-      exerciseNumber: 2,
-      questionNumber: 4,
-      itemA: `Core Competency: Critical Thinking`,
-      itemB: `Analyzing problems logically and making reasoned decisions in Ghana`,
-      matchKey: `Analyzing problems logically and making reasoned decisions in Ghana`
-    },
-    {
-      id: `match_d${day}_ex2_q5`,
-      dayNumber: day,
-      exerciseNumber: 2,
-      questionNumber: 5,
-      itemA: `Core Competency: Collaboration`,
-      itemB: `Working respectfully in groups to solve real-life challenges`,
-      matchKey: `Working respectfully in groups to solve real-life challenges`
-    }
-  ];
+  const mk = (i: number, ex: number, qn: number): ExerciseMatchingPair => ({
+    id: `match_d${day}_ex${ex}_q${qn}`,
+    dayNumber: day,
+    exerciseNumber: ex,
+    questionNumber: qn,
+    itemA: pairs[i].term,
+    itemB: pairs[i].definition,
+    matchKey: pairs[i].definition
+  });
+
+  const ex1 = [0, 1, 2, 3, 4].map(qn => mk(qn, 1, qn + 1));
+  const ex2 = [5, 6, 7, 8, 9].map(qn => mk(qn, 2, qn - 4));
 
   return [...ex1, ...ex2];
 }
 
 // Generate 2 Application Exercises (5 Questions each = 10 questions) for a specific Day
-function generateDailyApplicationExercises(day: number, inputs: PlanFormInputs, keywords: string[], topic: string): ExerciseApplication[] {
+function generateDailyApplicationExercises(day: number, inputs: PlanFormInputs, keywords: string[], topic: string, sentences: string[] = []): ExerciseApplication[] {
   const isLower = isLowerClassLevel(inputs.classLevel);
+  const recall = sentences.length > 0 ? sentences[(day - 1) % sentences.length] : '';
 
   const ex1: ExerciseApplication[] = [
     {
@@ -774,7 +1052,7 @@ function generateDailyApplicationExercises(day: number, inputs: PlanFormInputs, 
       scenarioOrContext: `Kofi and Ama are visiting the local market in their town in Ghana. They observe merchants and community members interacting during their daily trade.`,
       question: isLower
         ? `(Day ${day} • Exercise 1) How can Kofi and Ama use what they learned about ${topic} to help their parents at home or in the market?`
-        : `(Day ${day} • Exercise 1) Describe step-by-step how Kofi and Ama can apply the principles of ${topic} to solve a real practical problem in the market.`,
+        : `(Day ${day} • Exercise 1) Describe step-by-step how Kofi and Ama can apply the principles of ${topic} to solve a real practical problem in the market.${recall ? ` (Recall the curriculum example: ${recall})` : ''}`,
       sampleAnswer: `Learners should identify the practical application of ${topic} by explaining how concepts like ${keywords[0] || 'the core lesson idea'} assist in daily routines, fair transactions, or accurate counting/decision making.`
     },
     {
@@ -792,7 +1070,7 @@ function generateDailyApplicationExercises(day: number, inputs: PlanFormInputs, 
       exerciseNumber: 1,
       questionNumber: 3,
       scenarioOrContext: `Your younger sibling asks you to explain why ${inputs.subject} is important for everyday life in Ghana.`,
-      question: `(Day ${day} • Exercise 1) In 2–3 clear sentences, explain to your sibling how knowing ${topic} makes everyday activities easier and safer.`,
+      question: `(Day ${day} • Exercise 1) In 2-3 clear sentences, explain to your sibling how knowing ${topic} makes everyday activities easier and safer.`,
       sampleAnswer: `Learners explain that understanding ${topic} develops reasoning, helps avoid mistakes in real-world tasks, and supports community development.`
     },
     {
@@ -867,7 +1145,7 @@ function generateDailyApplicationExercises(day: number, inputs: PlanFormInputs, 
 }
 
 // Generate 2 Diagram & Visual Exercises (5 Questions each = 10 questions) for a specific Day
-function generateDailyDiagramExercises(day: number, inputs: PlanFormInputs, keywords: string[], topic: string): ExerciseDiagram[] {
+function generateDailyDiagramExercises(day: number, inputs: PlanFormInputs, keywords: string[], topic: string, sentences: string[] = []): ExerciseDiagram[] {
   const isLower = isLowerClassLevel(inputs.classLevel);
 
   if (isLower) {
@@ -1001,6 +1279,11 @@ function generateDailyDiagramExercises(day: number, inputs: PlanFormInputs, keyw
     return [...ex1, ...ex2];
   } else {
     // Upper Primary & JHS (Basic 4-9): Subject diagrams, system schematics, charts, maps, geometric figures
+    // For Mathematics, a genuine place value chart built from a real number
+    // in the official curriculum examples replaces the generic schematic.
+    const chartNum = /math/i.test(inputs.subject) ? findChartNumber(sentences.join(' ')) : null;
+    const pvChart = chartNum ? buildPlaceValueChart(chartNum) : null;
+
     const ex1: ExerciseDiagram[] = [
       {
         id: `diag_d${day}_ex1_q1`,
@@ -1063,6 +1346,21 @@ function generateDailyDiagramExercises(day: number, inputs: PlanFormInputs, keyw
         expectedAnswer: `A well-labeled diagram featuring title, key components, and brief explanatory annotations.`
       }
     ];
+
+    if (pvChart && chartNum) {
+      ex1[0] = {
+        id: `diag_d${day}_ex1_q1`,
+        dayNumber: day,
+        exerciseNumber: 1,
+        questionNumber: 1,
+        diagramCategory: 'Diagram Labeling',
+        diagramTitle: `Place Value Chart Labeling (${inputs.subject}: ${topic})`,
+        diagramPrompt: `Study the place value chart below for the number ${chartNum}.`,
+        diagramAsciiOrDescription: pvChart.chart,
+        question: `(Day ${day} • Exercise 1) ${pvChart.question}`,
+        expectedAnswer: pvChart.expectedAnswer
+      };
+    }
 
     const ex2: ExerciseDiagram[] = [
       {
