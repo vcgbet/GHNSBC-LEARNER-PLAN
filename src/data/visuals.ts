@@ -618,7 +618,7 @@ function pickVisual(subj: string, classLevel: string, text: string, category: st
     if (/food chain|food web|predator|prey/.test(text)) return 'food-chain';
     if (/water cycle|cycle of water/.test(text)) return 'water-cycle';
     if (/solid|liquid|gas|states? of matter/.test(text)) return 'states-of-matter';
-    if (/plant|root|stem|leaf|flower|fruit|photosynthesis|seed/.test(text)) return 'plant-parts';
+    if (/plant|photosynthesis|flower|\bleaf|\bleaves|\bstems?\b|fruit|\bseeds?\b|\broots? (of|in)/.test(text)) return 'plant-parts';
     return null;
   }
   if (subj === 'social studies' || /geography/.test(subj)) {
