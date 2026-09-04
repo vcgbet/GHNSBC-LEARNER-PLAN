@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Download, FileSpreadsheet, FileText, Copy, Check, Save, Sparkles, BookOpen, Layers, CheckSquare, Eye, EyeOff, Share2, Award, ArrowLeft, CheckCircle } from 'lucide-react';
 import { LearnerPlanOutput, ExerciseFillInBlank, ExerciseMCQ, ExerciseMatchingPair, ExerciseApplication, ExerciseDiagram } from '../types';
+import { DiagramVisual } from './DiagramVisual';
 import { downloadDocx } from '../utils/docxExporter';
 import { exportToPdf } from '../utils/pdfExporter';
 import { sanitizePerformanceIndicator } from '../utils/formatUtils';
@@ -887,9 +888,15 @@ export const PlanViewer: React.FC<PlanViewerProps> = ({ plan, onSavePlan, isSave
                                     <div className="text-slate-700 italic">{diag.diagramPrompt}</div>
                                     
                                     {/* Visual Diagram Box */}
-                                    <div className="bg-slate-900 text-emerald-300 p-3.5 rounded-lg font-mono text-[11px] whitespace-pre overflow-x-auto border border-slate-800 shadow-inner">
-                                      {diag.diagramAsciiOrDescription}
-                                    </div>
+                                    {diag.diagramSvg ? (
+                                      <div className="bg-white rounded-lg border-2 border-slate-300 p-3 flex justify-center shadow-inner">
+                                        <DiagramVisual svg={diag.diagramSvg} />
+                                      </div>
+                                    ) : (
+                                      <div className="bg-slate-900 text-emerald-300 p-3.5 rounded-lg font-mono text-[11px] whitespace-pre overflow-x-auto border border-slate-800 shadow-inner">
+                                        {diag.diagramAsciiOrDescription}
+                                      </div>
+                                    )}
 
                                     <div className="font-bold text-slate-900 pt-1">
                                       <span>Question: {diag.question}</span>
