@@ -9,7 +9,7 @@ import { getNaCCACurriculumReference } from './naccaReferences';
 // standard + indicator + sub-strand). Never a fixed meta-word list —
 // learners are not asked about "Concept / Definition / Structure" etc.
 export function deriveContentKeyWords(text: string): string[] {
-  const stop = new Set('the and of in for to a an with on from by such each like use their its this that these those or of demonstrate understanding knowledge show apply identify explain describe discuss state list give draw make do put set label name mention tell model relation strand subject part parts different'.split(' '));
+  const stop = new Set('the and of in for to a an with on from by such each like use their its this that these those or of demonstrate understanding knowledge show apply identify explain describe discuss state list give draw make do put set label name mention tell model relation strand subject part parts different since socio assess'.split(' '));
   const words = text.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(w => w.length >= 4 && !stop.has(w));
   const seen = new Set<string>();
   const out: string[] = [];
@@ -110,7 +110,7 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
   if (keywords.length < 3) {
     // Top the list up with words from the official curriculum text itself
     // (content standard + indicator + exemplars + sub-strand).
-    const derived = deriveContentKeyWords(`${matchedCS?.description || ''} ${indicatorDesc} ${exemplarText} ${inputs.subStrand || ''}`);
+    const derived = deriveContentKeyWords(`${indicatorDesc} ${exemplarText} ${matchedCS?.description || ''} ${inputs.subStrand || ''}`);
     for (const d of derived) {
       if (keywords.length >= 6) break;
       if (!keywords.some(k => k.toLowerCase() === d.toLowerCase())) keywords.push(d);
@@ -202,7 +202,31 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
   const isHistoryOrHumanities = /history|social|owop|rme|culture|citizenship/i.test(inputs.subject);
   const isStem = /math|sci|comp|ict|tech/i.test(inputs.subject);
 
-  const mainContentPoints = isHistoryOrHumanities ? [
+  const richDescSentences = splitSentences(cleanDesc(indicatorDesc));
+  const contentBullets = exemplarSentences.length > 0 ? exemplarSentences : richDescSentences;
+  const useContentNotes = contentBullets.length > 0 && (exemplarSentences.length > 0 || cleanDesc(indicatorDesc).length > 60);
+  const mainContentPoints = useContentNotes ? [
+    {
+      heading: `1. What You Will Learn in ${topic}`,
+      body: `The official curriculum for this lesson focuses on the points below. Read each one carefully and note it down in your own words:`,
+      bulletPoints: contentBullets.slice(0, 4).map(x => x.replace(/\.*$/, '').trim())
+    },
+    {
+      heading: `2. Key Terms to Master`,
+      body: `Keep these key terms in mind while studying ${topic}:`,
+      bulletPoints: keywords.slice(0, 5).map(k => `${k}: use the term correctly in your answers and on your labels.`)
+    },
+    {
+      heading: `3. How to Tackle Exercises on ${topic}`,
+      body: `When answering exercise questions on this lesson, follow these steps:`,
+      bulletPoints: [
+        `Read each question carefully and identify exactly what it is asking for.`,
+        `Use the key terms from the lesson correctly in your answers.`,
+        `Label your diagrams clearly and completely when asked to draw.`,
+        `Check your answers against the lesson notes before finishing.`
+      ]
+    }
+  ] : isHistoryOrHumanities ? [
     {
       heading: `1. Historical & Conceptual Context of ${topic}`,
       body: `Understanding the background and significance of ${topic} helps learners appreciate Ghana's heritage and historical development.`,
@@ -530,14 +554,14 @@ export function getTermDefinition(term: string, subject: string, topic: string, 
 
   // Derive a real definition from the official curriculum text if the term
   // appears in the indicator description or its exemplars.
-  const derived = deriveDefinitionFromText(term, `${topic} ${exemplarText}`);
+  const derived = deriveDefinitionFromText(term, exemplarText);
   if (derived) return derived;
 
   // Last resort: stay about the real content. Use the curriculum sentence
   // that actually mentions the term; if none exists, a plain content line.
   // (The old circular "Key subject terminology in ... representing ..."
   // fallback read as filler in exported plans.)
-  const containing = splitSentences(`${topic} ${exemplarText}`).find(
+  const containing = splitSentences(exemplarText).find(
     sent => new RegExp(`\\b${escapeRegExp(term.toLowerCase())}s?\\b`, 'i').test(sent)
   );
   if (containing) return containing.replace(/\.+$/, '').trim() + '.';
