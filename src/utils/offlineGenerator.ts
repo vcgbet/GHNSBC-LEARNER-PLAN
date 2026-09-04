@@ -1,4 +1,5 @@
 import { LearnerPlanOutput, PlanFormInputs, ExerciseFillInBlank, ExerciseMCQ, ExerciseMatchingPair, ExerciseApplication, ExerciseDiagram, DailyLessonPlan } from '../types';
+import { attachDiagramVisuals } from '../data/visuals';
 import { GHANA_CURRICULUM_DATA } from '../data/ghanaCurriculum';
 import { getAutoCoreCompetencies } from './coreCompetencies';
 import { sanitizePerformanceIndicator } from './formatUtils';
@@ -294,6 +295,9 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
     application.push(...generateDailyApplicationExercises(day, inputs, keywords, topic, exemplarSentences));
     diagram.push(...generateDailyDiagramExercises(day, inputs, keywords, topic, exemplarSentences));
   }
+
+  // Attach real SVG diagrams (VCGMEDIA visual library) to the Diagram & Visual layer
+  attachDiagramVisuals(diagram, inputs.subject || '', inputs.classLevel || '', topic, keywords);
 
   // Generate Daily Lesson Plans
   const dailyPlans: DailyLessonPlan[] = [];

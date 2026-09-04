@@ -1,7 +1,8 @@
-import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, HeadingLevel, AlignmentType, PageBreak } from 'docx';
+import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, HeadingLevel, AlignmentType, PageBreak, ImageRun } from 'docx';
 import { LearnerPlanOutput } from '../types';
 import { sanitizePerformanceIndicator } from './formatUtils';
 import { getNaCCACurriculumReference } from './naccaReferences';
+import { svgToPngDataUrl } from '../data/visuals';
 
 export async function exportToDocx(plan: LearnerPlanOutput): Promise<Blob> {
   const { header, starter, mainPhase, plenaryReflection, rcaQuestions, learnerWritingNotes, exercises } = plan;
@@ -438,6 +439,13 @@ export async function exportToDocx(plan: LearnerPlanOutput): Promise<Blob> {
     const dayMatching = (exercises?.matching || []).filter(m => (m.dayNumber || 1) === dayNum);
     const dayApp = (exercises?.application || []).filter(a => (a.dayNumber || 1) === dayNum);
     const dayDiag = (exercises?.diagram || []).filter(d => (d.dayNumber || 1) === dayNum);
+    const diagImages: Record<string, string> = {};
+    for (const dv of dayDiag) {
+      if (dv.diagramSvg) {
+        const png = await svgToPngDataUrl(dv.diagramSvg);
+        if (png) diagImages[dv.id || ''] = png;
+      }
+    }
 
     const hasAny = dayFIBs.length > 0 || dayMCQs.length > 0 || dayMatching.length > 0 || dayApp.length > 0 || dayDiag.length > 0;
     if (!hasAny) continue;
@@ -613,11 +621,15 @@ export async function exportToDocx(plan: LearnerPlanOutput): Promise<Blob> {
                 new TextRun({ text: `Instruction: ${diag.diagramPrompt}`, italics: true, size: 19 })
               ]
             }),
-            new Paragraph({
-              children: [
-                new TextRun({ text: diag.diagramAsciiOrDescription, font: "Courier New", size: 18 })
-              ]
-            }),
+            diagImages[diag.id || '']
+              ? new Paragraph({
+                  children: [new ImageRun({ data: diagImages[diag.id || ''], transformation: { width: 300, height: 225 }, type: 'png' })]
+                })
+              : new Paragraph({
+                  children: [
+                    new TextRun({ text: diag.diagramAsciiOrDescription, font: "Courier New", size: 18 })
+                  ]
+                }),
             new Paragraph({
               children: [
                 new TextRun({ text: `Question: ${diag.question}`, bold: true, size: 20 })

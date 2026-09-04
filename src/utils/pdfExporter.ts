@@ -3,6 +3,7 @@ import autoTable from 'jspdf-autotable';
 import { LearnerPlanOutput } from '../types';
 import { sanitizePerformanceIndicator } from './formatUtils';
 import { getNaCCACurriculumReference } from './naccaReferences';
+import { svgToPngDataUrl } from '../data/visuals';
 
 function applyAutoTable(doc: jsPDF, options: any) {
   try {
@@ -24,8 +25,18 @@ function getLastAutoTableY(doc: jsPDF, fallbackY: number): number {
   return (doc as any).lastAutoTable?.finalY ?? fallbackY;
 }
 
-export function exportToPdf(plan: LearnerPlanOutput) {
+export async function exportToPdf(plan: LearnerPlanOutput) {
   const { header, starter, mainPhase, plenaryReflection, rcaQuestions, learnerWritingNotes, exercises } = plan;
+
+  // Pre-rasterize every attached SVG diagram to PNG (once, up front, so the
+  // synchronous PDF layout loops below can embed the images safely).
+  const diagramPngs: Record<string, string> = {};
+  for (const dv of exercises?.diagram || []) {
+    if (dv.diagramSvg) {
+      const png = await svgToPngDataUrl(dv.diagramSvg);
+      if (png) diagramPngs[dv.id || ''] = png;
+    }
+  }
 
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -463,13 +474,21 @@ export function exportToPdf(plan: LearnerPlanOutput) {
             doc.text(pSplit, 16, exY);
             exY += (pSplit.length * 3.5) + 1;
 
-            doc.setFont('courier', 'normal');
-            doc.setFontSize(7.5);
-            doc.setTextColor(30, 41, 59);
-            const dSplit = doc.splitTextToSize(diag.diagramAsciiOrDescription, 176);
-            if (exY + (dSplit.length * 3) > 280) { doc.addPage(); exY = 15; }
-            doc.text(dSplit, 16, exY);
-            exY += (dSplit.length * 3) + 2;
+            if (diag.diagramSvg && diagramPngs[diag.id || '']) {
+              const imgW = 110;
+              const imgH = imgW * 0.75;
+              if (exY + imgH > 280) { doc.addPage(); exY = 15; }
+              doc.addImage(diagramPngs[diag.id || ''], 'PNG', 50, exY, imgW, imgH);
+              exY += imgH + 3;
+            } else {
+              doc.setFont('courier', 'normal');
+              doc.setFontSize(7.5);
+              doc.setTextColor(30, 41, 59);
+              const dSplit = doc.splitTextToSize(diag.diagramAsciiOrDescription, 176);
+              if (exY + (dSplit.length * 3) > 280) { doc.addPage(); exY = 15; }
+              doc.text(dSplit, 16, exY);
+              exY += (dSplit.length * 3) + 2;
+            }
 
             doc.setFont('helvetica', 'bold');
             doc.setFontSize(8.5);
