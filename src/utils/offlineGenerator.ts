@@ -5,6 +5,23 @@ import { getAutoCoreCompetencies } from './coreCompetencies';
 import { sanitizePerformanceIndicator } from './formatUtils';
 import { getNaCCACurriculumReference } from './naccaReferences';
 
+// Fallback key words: derived from the ACTUAL curriculum text (content
+// standard + indicator + sub-strand). Never a fixed meta-word list —
+// learners are not asked about "Concept / Definition / Structure" etc.
+export function deriveContentKeyWords(text: string): string[] {
+  const stop = new Set('the and of in for to a an with on from by such each like use their its this that these those or of demonstrate understanding knowledge show apply identify explain describe discuss state list give draw make do put set label name mention tell model relation strand subject part parts different'.split(' '));
+  const words = text.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(w => w.length >= 4 && !stop.has(w));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const w of words) {
+    if (seen.has(w)) continue;
+    seen.add(w);
+    out.push(w.charAt(0).toUpperCase() + w.slice(1));
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
 export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutput {
   // Defensive normalisation — the server calls this with raw request bodies
   // that may be missing or null fields. Never let a partial payload crash
@@ -90,7 +107,15 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
   // produce circular "Key subject terminology ..." filler downstream), then
   // fall back to the generic list when nothing survives.
   keywords = keywords.filter(t => !isCircularDefinition(getTermDefinition(t, inputs.subject, topic, 0, exemplarText)));
-  if (keywords.length === 0) keywords = ['Concept', 'Definition', 'Structure', 'Application', 'Analysis', 'Example'];
+  if (keywords.length < 3) {
+    // Top the list up with words from the official curriculum text itself
+    // (content standard + indicator + exemplars + sub-strand).
+    const derived = deriveContentKeyWords(`${matchedCS?.description || ''} ${indicatorDesc} ${exemplarText} ${inputs.subStrand || ''}`);
+    for (const d of derived) {
+      if (keywords.length >= 6) break;
+      if (!keywords.some(k => k.toLowerCase() === d.toLowerCase())) keywords.push(d);
+    }
+  }
   keywords = keywords.slice(0, 8);
   const numDays = Math.max(1, inputs.numberOfDays || 1);
 
@@ -289,8 +314,8 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
   const diagram: ExerciseDiagram[] = [];
 
   for (let day = 1; day <= numDays; day++) {
-    fillInBlanks.push(...generateDailyFillInBlanks(day, inputs, keywords, topic, exemplarSentences));
-    mcqs.push(...generateDailyMCQs(day, inputs, keywords, topic, exemplarSentences));
+    fillInBlanks.push(...generateDailyFillInBlanks(day, inputs, keywords, topic, exemplarSentences, exemplarText));
+    mcqs.push(...generateDailyMCQs(day, inputs, keywords, topic, exemplarSentences, exemplarText));
     matching.push(...generateDailyMatchingPairs(day, inputs, keywords, topic, exemplarSentences, exemplarText));
     application.push(...generateDailyApplicationExercises(day, inputs, keywords, topic, exemplarSentences));
     diagram.push(...generateDailyDiagramExercises(day, inputs, keywords, topic, exemplarSentences));
@@ -485,7 +510,15 @@ export function getTermDefinition(term: string, subject: string, topic: string, 
   const derived = deriveDefinitionFromText(term, `${topic} ${exemplarText}`);
   if (derived) return derived;
 
-  return `Key subject terminology in ${subject} representing "${term}" as studied under ${topic}.`;
+  // Last resort: stay about the real content. Use the curriculum sentence
+  // that actually mentions the term; if none exists, a plain content line.
+  // (The old circular "Key subject terminology in ... representing ..."
+  // fallback read as filler in exported plans.)
+  const containing = splitSentences(`${topic} ${exemplarText}`).find(
+    sent => new RegExp(`\\b${escapeRegExp(term.toLowerCase())}s?\\b`, 'i').test(sent)
+  );
+  if (containing) return containing.replace(/\s+\.+$/, '').trim() + '.';
+  return `${term} is a key idea in ${topic} that the ${subject} lesson explains with examples from everyday life in Ghana.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -704,10 +737,11 @@ function isLowerClassLevel(classLevel: string): boolean {
 }
 
 // Generate 2 FIB Exercises (5 Questions each = 10 questions) for a specific Day
-function generateDailyFillInBlanks(day: number, inputs: PlanFormInputs, keywords: string[], topic: string, sentences: string[] = []): ExerciseFillInBlank[] {
+function generateDailyFillInBlanks(day: number, inputs: PlanFormInputs, keywords: string[], topic: string, sentences: string[] = [], exemplarText: string = ''): ExerciseFillInBlank[] {
+  const derivedFallback = deriveContentKeyWords(topic);
   const safeKeywords = (keywords && keywords.length > 0)
     ? keywords
-    : ['Concept', 'Principle', 'Method', 'Application', 'Analysis', 'Evaluation', 'Structure', 'Function', 'Process', 'System'];
+    : (derivedFallback.length > 0 ? derivedFallback : [topic]);
 
   const getKw = (offset: number) => safeKeywords[(day * 3 + offset) % safeKeywords.length];
 
@@ -743,7 +777,7 @@ function generateDailyFillInBlanks(day: number, inputs: PlanFormInputs, keywords
       dayNumber: day,
       exerciseNumber: 1,
       questionNumber: 1,
-      ...fib(1, 1, `(Day ${day} • Exercise 1) In our study of ${topic}, the core term "____" is defined as: ${getTermDefinition(getKw(0), inputs.subject, topic, 0)}`, getKw(0))
+      ...fib(1, 1, `(Day ${day} • Exercise 1) In our study of ${topic}, the core term "____" is defined as: ${getTermDefinition(getKw(0), inputs.subject, topic, 0, exemplarText)}`, getKw(0))
     },
     {
       id: `fib_d${day}_ex1_q2`,
@@ -821,10 +855,11 @@ function generateDailyFillInBlanks(day: number, inputs: PlanFormInputs, keywords
 }
 
 // Generate 2 MCQ Exercises (5 Questions each = 10 questions) for a specific Day
-function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string[], topic: string, sentences: string[] = []): ExerciseMCQ[] {
+function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string[], topic: string, sentences: string[] = [], exemplarText: string = ''): ExerciseMCQ[] {
+  const derivedFallback = deriveContentKeyWords(topic);
   const safeKeywords = (keywords && keywords.length > 0)
     ? keywords
-    : ['Concept', 'Principle', 'Method', 'Application', 'Analysis', 'Evaluation', 'Structure', 'Function', 'Process', 'System'];
+    : (derivedFallback.length > 0 ? derivedFallback : [topic]);
 
   const getKw = (offset: number) => safeKeywords[(day * 3 + offset) % safeKeywords.length];
 
@@ -854,7 +889,7 @@ function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string
           questionNumber: 1,
           question: `(Day ${day} • Exercise 1) What is the primary definition or meaning of ${getKw(0)} in ${inputs.subject}?`,
           options: {
-            A: getTermDefinition(getKw(0), inputs.subject, topic, 0),
+            A: getTermDefinition(getKw(0), inputs.subject, topic, 0, exemplarText),
             B: 'An unrelated concept not included in the Ghana NSBC syllabus.',
             C: 'A tool used exclusively for weather monitoring.',
             D: 'None of the above.'
@@ -884,7 +919,7 @@ function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string
       questionNumber: 3,
       question: `(Day ${day} • Exercise 1) Which of the following statements about ${getKw(1)} is accurate?`,
       options: {
-        A: getTermDefinition(getKw(1), inputs.subject, topic, 1),
+        A: getTermDefinition(getKw(1), inputs.subject, topic, 1, exemplarText),
         B: 'It refers to an athletic sport.',
         C: 'It is a decorative symbol with no subject relevance.',
         D: `It has no application in ${inputs.subject}.`
@@ -964,7 +999,7 @@ function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string
           questionNumber: 3,
           question: `(Day ${day} • Exercise 2) Which of the following best describes ${getKw(3)} as used in ${topic}?`,
           options: {
-            A: getTermDefinition(getKw(3), inputs.subject, topic, 2),
+            A: getTermDefinition(getKw(3), inputs.subject, topic, 2, exemplarText),
             B: 'It is completely unrelated to this subject.',
             C: 'It is only used outside of Ghana.',
             D: 'It has no practical use in daily life.'
@@ -1009,9 +1044,10 @@ function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string
 
 // Generate 2 Matching Column Exercises (5 Pairs each = 10 pairs) for a specific Day
 function generateDailyMatchingPairs(day: number, inputs: PlanFormInputs, keywords: string[], topic: string, sentences: string[] = [], exemplarText: string = ''): ExerciseMatchingPair[] {
+  const derivedFallback = deriveContentKeyWords(topic);
   const safeKeywords = (keywords && keywords.length > 0)
     ? keywords
-    : ['Concept', 'Principle', 'Method', 'Application', 'Analysis', 'Evaluation', 'Structure', 'Function', 'Process', 'System'];
+    : (derivedFallback.length > 0 ? derivedFallback : [topic]);
 
   const getKw = (offset: number) => safeKeywords[(day * 3 + offset) % safeKeywords.length];
   const def = (kw: string, idx: number) => getTermDefinition(kw, inputs.subject, topic, idx, exemplarText);
@@ -1387,9 +1423,9 @@ function generateDailyDiagramExercises(day: number, inputs: PlanFormInputs, keyw
         questionNumber: 1,
         diagramCategory: 'Diagram Labeling',
         diagramTitle: `Process Cycle Diagram (${topic})`,
-        diagramPrompt: `Study the cyclical diagram below and identify the missing stage marked as [ Stage X ].`,
+        diagramPrompt: `Study the process cycle below. One stage is missing, marked 'Stage X'. Identify it and explain why it is essential for completing the process.`,
         diagramAsciiOrDescription: `┌────────────────────────────────────────────────────────┐\n│  [ CONTINUOUS PROCESS CYCLE ]                          │\n│             ┌─────────────────────────┐                │\n│             │ Stage 1: Preparation    │                │\n│             └────────────┬────────────┘                │\n│         ▲                │                ▼            │\n│  ┌──────┴──────┐         │         ┌──────┴──────┐     │\n│  │ [ Stage X ] │ ◄───────┴─────────┤ Stage 2:    │     │\n│  │ (Identify)  │                   │ Execution   │     │\n│  └─────────────┘                   └─────────────┘     │\n└────────────────────────────────────────────────────────┘`,
-        question: `(Day ${day} • Exercise 2) Name [ Stage X ] in the cycle and explain why it is essential for completing the process.`,
+        question: `(Day ${day} • Exercise 2) Name the stage marked 'Stage X' in the cycle and explain why it is essential for completing the process.`,
         expectedAnswer: `Stage X is Evaluation / Review / Plenary, ensuring accuracy and mastery before the next cycle.`
       },
       {
