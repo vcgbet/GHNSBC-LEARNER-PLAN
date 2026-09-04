@@ -104,6 +104,29 @@ async function getAiSlots(): Promise<Array<{ model: string; delayMs: number }>> 
   ];
 }
 
+// Key words must be REAL subject vocabulary from the lesson content —
+// never meta/category words ("Concept", "Definition", ...). deriveKeyWords
+// extracts meaningful words from the official curriculum text itself.
+const META_KEYWORDS = new Set(['concept', 'definition', 'structure', 'application', 'analysis', 'example', 'vocabulary', 'terminology', 'term', 'terms', 'skill', 'skills', 'strategy', 'principle', 'method', 'process', 'idea', 'key word', 'keyword']);
+function deriveKeyWords(inputs: PlanFormInputs): string[] {
+  const stop = new Set('the and of in for to a an with on from by such each like use their its this that these those or of demonstrate understanding knowledge show apply identify explain describe discuss state list give draw make do put set label name mention tell model relation strand subject part parts'.split(' '));
+  const text = `${inputs.contentStandard || ''} ${inputs.indicator || ''} ${inputs.subStrand || ''} ${inputs.strand || ''}`;
+  const words = text.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(w => w.length >= 4 && !stop.has(w));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const w of words) {
+    if (seen.has(w)) continue;
+    seen.add(w);
+    out.push(w.charAt(0).toUpperCase() + w.slice(1));
+    if (out.length >= 6) break;
+  }
+  return out.length ? out : ['Key terms from the lesson'];
+}
+function cleanKeyWords(raw: string[] | undefined, inputs: PlanFormInputs): string[] {
+  const kept = (raw || []).map(k => String(k).trim()).filter(k => k.length > 0 && !META_KEYWORDS.has(k.toLowerCase()));
+  return kept.length >= 3 ? kept.slice(0, 8) : deriveKeyWords(inputs);
+}
+
 // Shared LESSON PARAMETERS block used by every AI call.
 function buildLessonParams(inputs: PlanFormInputs): string {
   return `LESSON PARAMETERS:
@@ -567,15 +590,17 @@ IMPORTANT: Exercises are generated separately — do NOT include any exercises o
 ${buildLessonParams(inputs)}
 ${curriculumBlock}
 
+ABSOLUTE RULE (learner-facing quality): ALL notes, activities, questions, scenarios, options and answers must be about the lesson CONTENT only. Never reference or ask about the plan's own rubric or structure (strands, sub-strands, content standards, performance indicators, core competencies, TLMs, key-words lists) inside any sentence or question. Never ask learners about generic study habits or about 'Concept / Definition / Structure / Application / Analysis' as if they were vocabulary. Never leave bracketed placeholders like [ ... ] in any text. If a sentence would only make sense because of the lesson plan's own fields, rewrite it about the actual lesson content.
+
 REQUIREMENTS:
 ${piRequirement}
 2. Teaching & Learning Materials (TLMs): 4-6 specific local materials.
-3. Core Competencies & Key Words: Automatically generate 3-5 specific NaCCA Core Competencies tailored to this subject and indicator (e.g. Critical Thinking and Problem Solving (CP), Communication and Collaboration (CC), Creativity and Innovation (CI), Digital Literacy (DL), Personal Development and Leadership (PL), Cultural Identity and Global Citizenship (CG)). Explain briefly how each competency is fostered in the lesson.
+3. Core Competencies & Key Words: Automatically generate 3-5 specific NaCCA Core Competencies tailored to this subject and indicator (e.g. Critical Thinking and Problem Solving (CP), Communication and Collaboration (CC), Creativity and Innovation (CI), Digital Literacy (DL), Personal Development and Leadership (PL), Cultural Identity and Global Citizenship (CG)). Explain briefly how each competency is fostered in the lesson. Key Words: 5-8 REAL subject vocabulary terms that belong to THIS lesson's content (for a lesson on teeth, that is words like crown, neck, root, incisor, molar, premolar, enamel, dentine). NEVER use meta/category words such as Concept, Definition, Structure, Application, Analysis, Example, Vocabulary or Terminology as key words — those are not lesson vocabulary.
 4. Starter Phase (Phase 1): Warm-up activity, introduction, prior knowledge check.
 5. Main Phase Activities (Phase 2): Detailed step-by-step teacher actions and learner actions, group work, independent practice, assessment methods.
 6. Plenary/Reflection (Phase 3): Lesson summary and learner reflection.
 7. RCA Questions: 3 distinct questions - Reflect, Connect, and Apply (focusing on local Ghanaian life and everyday context).
-8. Learner Writing Notes: Very detailed, thorough, student-friendly notes for learners to write in their notebooks. Must include a comprehensive introduction, 5-8 key vocabulary definitions, 3 detailed main content sections with rich explanatory text and step-by-step bullet points, and a thorough summary.
+8. Learner Writing Notes: Very detailed, thorough, student-friendly notes about the EXACT lesson content given above, for learners to write in their notebooks. Must include a comprehensive introduction, 5-8 key vocabulary definitions, 3 detailed main content sections with rich explanatory text and step-by-step bullet points, and a thorough summary. Each vocabulary definition must be a plain-language explanation of a REAL term from the lesson content (e.g. \"Crown: the visible top part of a tooth, covered in hard enamel.\" for a teeth lesson). NEVER write self-referential definitions such as 'Key subject terminology in Science representing \"Concept\" as studied under ...'. Do NOT mention strands, sub-strands, content standards, indicators, core competencies, TLMs or the lesson plan's own structure anywhere in the notes — write only about the lesson content.
 9. Daily Lesson Plans:
    - This plan is for ${days} day(s)/lesson(s).
    - In 'dailyPlans' array, generate EXACTLY ${days} item(s) (tagged dayNumber: 1..${days}). Each day must have a distinct Starter, Main Phase (Step 1, Step 2, Step 3, Assessment), and Plenary/Reflection showing realistic progression across the days.
@@ -596,6 +621,8 @@ AUTHORITATIVE CURRICULUM CONTENT (official NaCCA guide for this exact indicator 
 ${exemplarText || "  (none recorded — use realistic Ghanaian examples of exactly this content)"}
 ` : ""}
 - FOCUS: Day ${day} of ${days} — every question must test THIS day's objective above, nothing else.
+
+ABSOLUTE RULE (learner-facing quality): EVERY question, option, scenario, answer and explanation must test the specific content in the AUTHORITATIVE CURRICULUM CONTENT block above — and nothing else. Never write generic study-habit questions (e.g. about how to record answers in an exercise book), never questions about strands/sub-strands/content standards/core competencies/TLMs as if they were lesson content, never questions about 'Concept / Definition / Structure / Application / Analysis' as if they were vocabulary, and never content from a different topic. Never leave bracketed placeholders like [ ... ] in any text.
 
 REQUIREMENTS — exactly 10 items per tier (Exercise 1: questions 1-5; Exercise 2: questions 1-5):
 a) fillInBlanks: 10 items. Each question is a clear sentence with a "____" blank and the exact single answer. Tag each with exerciseNumber (1 or 2) and questionNumber (1 to 5).
@@ -679,7 +706,7 @@ e) diagram: 10 items. Tailored strictly to class level:
           : (inputs.coreCompetencies && inputs.coreCompetencies.length > 0)
             ? inputs.coreCompetencies
             : getAutoCoreCompetencies(inputs.subject, inputs.strand, inputs.subStrand),
-        keyWords: coreData?.header?.keyWords || ['Concept', 'Definition'],
+        keyWords: cleanKeyWords(coreData?.header?.keyWords, inputs),
         nameOfHead: inputs.nameOfHead || 'Mr. Kwesi Mensah',
         teacherName: inputs.teacherName || 'Class Teacher',
         schoolName: inputs.schoolName || 'Adom Basic School'
