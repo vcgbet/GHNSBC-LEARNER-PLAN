@@ -54,6 +54,28 @@ export function isDegenerateText(s: string): boolean {
   return false;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Meta-rubric / template garbage detection.
+// Sometimes the LLM (or a stale template) leaks the PLAN'S OWN STRUCTURE
+// into learner-facing text: self-referential "definitions" like
+// 'Key subject terminology in Science representing "Concept" as studied
+// under ...', questions about strands/sub-strands/content standards as if
+// they were lesson content, or literal unfilled placeholders like
+// '[ Stage X ]'. Such text must never reach the exported plan.
+// ─────────────────────────────────────────────────────────────────────────
+const META_GARBAGE_PATTERNS: RegExp[] = [
+  /key subject terminology in/i,
+  /as studied under/i,
+  /\[ ?stage x ?\]/i,
+  /\b(concept|definition|structure|application|analysis|example)\b is (one of|a key|an essential|vital|the core|a core)/i,
+  /what is the (primary )?(definition or )?meaning of (concept|definition|structure|application|analysis|example)\b/i,
+];
+
+export function isMetaGarbage(s: string): boolean {
+  if (!s || s.length < 15) return false;
+  return META_GARBAGE_PATTERNS.some(p => p.test(s));
+}
+
 // Clean, content-neutral replacements for degenerated fields, keyed by field
 // name so a scrubbed plan still reads sensibly in the exported PDF.
 const FIELD_FALLBACKS: Record<string, string> = {
@@ -91,7 +113,7 @@ export function sanitizeAiPlan(plan: LearnerPlanOutput): { plan: LearnerPlanOutp
 
   const walk = (node: any, key: string = ''): any => {
     if (typeof node === 'string') {
-      if (!isDegenerateText(node)) return node;
+      if (!isDegenerateText(node) && !isMetaGarbage(node)) return node;
       changed = true;
       return FIELD_FALLBACKS[key] ?? GENERIC_FALLBACK;
     }
