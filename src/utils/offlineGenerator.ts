@@ -231,14 +231,37 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
         `Participate actively in group discussions and present your findings confidently.`
       ]
     }
-  ] : isStem ? [
+  ] : isStem ? (exemplarSentences.length > 0 ? [
+    {
+      heading: `1. What You Will Learn in ${topic}`,
+      body: `The official curriculum for this lesson focuses on the points below. Read each one carefully and note it down in your own words:`,
+      bulletPoints: exemplarSentences.slice(0, 4).map(x => x.replace(/\.+$/, '').trim())
+    },
+    {
+      heading: `2. Key Terms to Master`,
+      body: `Keep these key terms in mind while studying ${topic}:`,
+      bulletPoints: keywords.slice(0, 5).map(k => `${k}: use the term correctly in your answers and on your labels.`)
+    },
+    {
+      heading: `3. How to Tackle Exercises on ${topic}`,
+      body: `When answering exercise questions on this lesson, follow these steps:`,
+      bulletPoints: [
+        `Read each question carefully and identify exactly what it is asking for.`,
+        `Use the key terms from the lesson correctly in your answers.`,
+        `Label your diagrams clearly and completely when asked to draw.`,
+        `Check your answers against the lesson notes before finishing.`
+      ]
+    }
+  ] : [
     {
       heading: `1. Fundamentals & Core Rules of ${topic}`,
       body: `Understanding the essential principles of ${topic} allows learners to build accuracy, logical reasoning, and problem-solving speed.`,
       bulletPoints: [
         `Curriculum Objective: ${indicatorDesc}`,
         `Primary Rule: Always follow a systematic, step-by-step procedure when working with ${topic}.`,
-        `Standard Representation: Use clear diagrams, standard units, symbols, and mathematical/scientific notation.`,
+        (/math/i.test(inputs.subject)
+          ? `Standard Representation: Use clear diagrams, standard units, symbols, and mathematical/scientific notation.`
+          : `Standard Representation: Use clear diagrams and label every part clearly when working with ${topic}.`),
         `Everyday Application: ${topic} is frequently used in local trading, measurement, computing, and environmental management in Ghana.`
       ]
     },
@@ -248,7 +271,7 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
       bulletPoints: [
         `Step 1 (Analyze): Read the problem carefully. Identify given facts and what you are required to calculate or explain.`,
         `Step 2 (Execute): Choose the appropriate rule, method, or formula for ${topic} and carry out the steps systematically.`,
-        `Step 3 (Verify): Double-check your final answer against the original question to ensure accuracy and correct units.`
+        `Step 3 (Verify): Double-check your final answer against the original question for correct labels and units (where required).`
       ]
     },
     {
@@ -265,7 +288,7 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
       body: `Work through this example from the NaCCA curriculum guide, copying each step into your exercise book:`,
       bulletPoints: exemplarSentences.slice(0, 3).map(s => s.charAt(0).toUpperCase() + s.slice(1))
     }] : [])
-  ] : [
+  ]) : [
     {
       heading: `1. Core Concepts & Overview of ${topic}`,
       body: `Mastering ${topic} in ${inputs.subject} provides learners with essential knowledge and practical skills.`,
@@ -315,7 +338,7 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
 
   for (let day = 1; day <= numDays; day++) {
     fillInBlanks.push(...generateDailyFillInBlanks(day, inputs, keywords, topic, exemplarSentences, exemplarText));
-    mcqs.push(...generateDailyMCQs(day, inputs, keywords, topic, exemplarSentences, exemplarText));
+    mcqs.push(...generateDailyMCQs(day, inputs, keywords, topic, exemplarSentences, exemplarText, lowerFirst(cleanDesc(indicatorDesc))));
     matching.push(...generateDailyMatchingPairs(day, inputs, keywords, topic, exemplarSentences, exemplarText));
     application.push(...generateDailyApplicationExercises(day, inputs, keywords, topic, exemplarSentences));
     diagram.push(...generateDailyDiagramExercises(day, inputs, keywords, topic, exemplarSentences));
@@ -517,7 +540,7 @@ export function getTermDefinition(term: string, subject: string, topic: string, 
   const containing = splitSentences(`${topic} ${exemplarText}`).find(
     sent => new RegExp(`\\b${escapeRegExp(term.toLowerCase())}s?\\b`, 'i').test(sent)
   );
-  if (containing) return containing.replace(/\s+\.+$/, '').trim() + '.';
+  if (containing) return containing.replace(/\.+$/, '').trim() + '.';
   return `${term} is a key idea in ${topic} that the ${subject} lesson explains with examples from everyday life in Ghana.`;
 }
 
@@ -855,7 +878,7 @@ function generateDailyFillInBlanks(day: number, inputs: PlanFormInputs, keywords
 }
 
 // Generate 2 MCQ Exercises (5 Questions each = 10 questions) for a specific Day
-function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string[], topic: string, sentences: string[] = [], exemplarText: string = ''): ExerciseMCQ[] {
+function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string[], topic: string, sentences: string[] = [], exemplarText: string = '', learningObjective: string = ''): ExerciseMCQ[] {
   const derivedFallback = deriveContentKeyWords(topic);
   const safeKeywords = (keywords && keywords.length > 0)
     ? keywords
@@ -902,15 +925,15 @@ function generateDailyMCQs(day: number, inputs: PlanFormInputs, keywords: string
       dayNumber: day,
       exerciseNumber: 1,
       questionNumber: 2,
-      question: `(Day ${day} • Exercise 1) What is the main learning objective when studying ${topic}?`,
+      question: `(Day ${day} • Exercise 1) What is the main learning objective of this lesson?`,
       options: {
         A: 'To memorize words without understanding their meaning.',
-        B: `To acquire practical knowledge, reasoning, and problem-solving skills in ${inputs.subject}.`,
+        B: `To ${learningObjective}.`,
         C: 'To skip all exercise book activities.',
         D: 'To copy notes blindly without asking questions.'
       },
       correctOption: 'B',
-      explanation: 'Ghana\'s Standard-Based Curriculum focuses on practical skills application and conceptual understanding.'
+      explanation: `The official indicator for this lesson: "${learningObjective}."`
     },
     {
       id: `mcq_d${day}_ex1_q3`,
