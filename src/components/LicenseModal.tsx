@@ -264,7 +264,7 @@ export const LicenseModal: React.FC<LicenseModalProps> = ({
                   <Crown className="w-3.5 h-3.5 text-yellow-400" />
                   3. Premium
                 </span>
-                <span className="text-xs font-bold text-yellow-400">GHC 150</span>
+                <span className="text-xs font-bold text-yellow-400">GHC 250</span>
               </div>
               <div className="text-lg font-bold text-white mb-1">Whole Term</div>
               <p className="text-[11px] text-slate-300 leading-relaxed mb-3">
