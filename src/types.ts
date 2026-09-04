@@ -115,6 +115,7 @@ export interface ExerciseDiagram {
   diagramTitle: string; // e.g. "Parts of a Flowering Plant", "Letter 'A' Tracing", "Ghana Flag Tracing"
   diagramPrompt: string; // Instructions for learners e.g. "Trace the dotted outline of the mango and color it" or "Identify the labeled part (i)"
   diagramAsciiOrDescription?: string; // Visual representation / ASCII diagram / guide box text
+  diagramSvg?: string; // Real inline SVG diagram attached by the Offline Engine visual library
   question: string;
   expectedAnswer: string; // Expected answer or completion note
 }
