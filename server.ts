@@ -8,6 +8,7 @@ import { sanitizeAiPlan, backfillExercises } from "./src/utils/aiPlanGuard";
 import { getAutoCoreCompetencies } from "./src/utils/coreCompetencies";
 import { parseSchemeText } from "./src/utils/schemeParser";
 import { getNaCCACurriculumReference } from "./src/utils/naccaReferences";
+import { attachDiagramVisuals } from "./src/data/visuals";
 import { GHANA_CURRICULUM_DATA } from "./src/data/ghanaCurriculum";
 
 const app = express();
@@ -677,6 +678,13 @@ e) diagram: 10 items. Tailored strictly to class level:
         }
       }
     });
+
+    // Attach the curated SVG library to AI diagram tasks by topic — the
+    // offline engine does this inside generateOfflinePlan; AI plans need it
+    // here or their diagram layer renders ASCII boxes instead of real visuals.
+    if (Array.isArray((exercises as any).diagram)) {
+      attachDiagramVisuals((exercises as any).diagram, inputs.subject || '', inputs.classLevel || '', inputs.subStrand || '', []);
+    }
 
     const fullPlan: LearnerPlanOutput = {
       id: `plan_${Date.now()}`,
