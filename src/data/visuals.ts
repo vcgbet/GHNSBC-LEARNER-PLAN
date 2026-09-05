@@ -664,7 +664,7 @@ const isEarlyYears = (classLevel: string): boolean =>
 function pickVisual(subj: string, classLevel: string, text: string, category: string): string | null {
   const upper = /basic 4|basic 5|basic 6|basic 7|basic 8|basic 9|b4|b5|b6|b7|b8|b9|jhs/.test(classLevel.toLowerCase());
   if (subj === 'science') {
-    if (/digest|stomach|intestine|gut|o(es)?ophag|nutrition/.test(text)) return upper ? 'digestive-system-upper' : 'digestive-system';
+    if (!/food chain|food web/.test(text) && /digest|stomach|intestine|gut|o(es)?ophag|nutrition|nutrient|\bfood\b/.test(text)) return upper ? 'digestive-system-upper' : 'digestive-system';
     if (/heart|blood|circulat|aorta|vena cava/.test(text)) return upper ? 'circulatory-system-upper' : 'circulatory-system';
     if (/breath|lung|respir/.test(text)) return 'respiratory-system';
     if (/solar|planet/.test(text)) return 'solar-system';
