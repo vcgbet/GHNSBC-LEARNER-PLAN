@@ -1,4 +1,14 @@
 import jsPDF from 'jspdf';
+
+// Rubric labels ("Sub-strand 1: X") belong in the header table only — learner
+// exercise pages show the clean content topic.
+function cleanTopicLabel(sub?: string): string {
+  let c = (sub || '').replace(/^(Sub-)?Strand\s+\d+\s*:?/i, '').trim();
+  if (c.length > 0 && c === c.toUpperCase()) {
+    c = c.toLowerCase().replace(/(^|\s)\p{L}/gu, (ch) => ch.toUpperCase());
+  }
+  return c || (sub || '');
+}
 import autoTable from 'jspdf-autotable';
 import { LearnerPlanOutput } from '../types';
 import { sanitizePerformanceIndicator } from './formatUtils';
@@ -282,7 +292,7 @@ export async function exportToPdf(plan: LearnerPlanOutput) {
       doc.setFontSize(9);
       doc.setFont('helvetica', 'italic');
       doc.setTextColor(107, 114, 128);
-      doc.text(`Class: ${header?.classLevel} | Day: ${header?.selectedDays?.[dayNum - 1] || `Day ${dayNum}`} | Topic: ${header?.subStrand}`, 105, 21, { align: 'center' });
+      doc.text(`Class: ${header?.classLevel} | Day: ${header?.selectedDays?.[dayNum - 1] || `Day ${dayNum}`} | Topic: ${cleanTopicLabel(header?.subStrand)}`, 105, 21, { align: 'center' });
 
       let exY = 28;
 

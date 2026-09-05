@@ -209,25 +209,41 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
   const richDescSentences = splitSentences(cleanDesc(indicatorDesc));
   const contentBullets = exemplarSentences.length > 0 ? exemplarSentences : richDescSentences;
   const useContentNotes = contentBullets.length > 0 && (exemplarSentences.length > 0 || cleanDesc(indicatorDesc).length > 60);
+  const csDescription = matchedCS ? String((matchedCS as any).description || '') : '';
+  const workedExample = exemplarSentences.length > 0
+    ? exemplarSentences.reduce((a, b) => (b.length > a.length ? b : a))
+    : '';
   const mainContentPoints = useContentNotes ? [
     {
-      heading: `1. What You Will Learn in ${topic}`,
-      body: `The official curriculum for this lesson focuses on the points below. Read each one carefully and note it down in your own words:`,
-      bulletPoints: contentBullets.slice(0, 4).map(x => x.replace(/\.*$/, '').trim())
+      heading: `1. What This Lesson Is About`,
+      body: `This ${inputs.subject} lesson is on ${topic}. In the NaCCA curriculum, this lesson asks you to ${lowerFirst(noEndPeriod(cleanDesc(csDescription)))}. In this specific indicator you will work on: ${lowerFirst(noEndPeriod(cleanDesc(indicatorDesc)))}. The study points below come straight from the official curriculum guide for your class.`
     },
     {
-      heading: `2. Key Terms to Master`,
-      body: `Keep these key terms in mind while studying ${topic}:`,
-      bulletPoints: keywords.slice(0, 5).map(k => `${k}: use the term correctly in your answers and on your labels.`)
+      heading: `2. Key Points to Study (Official Curriculum)`,
+      body: `Read each point below carefully, then note it down in your own words in your exercise book. These are the exact points the curriculum expects you to know for ${topic}:`,
+      bulletPoints: contentBullets.slice(0, 6).map(x => x.replace(/\.*$/, '').trim())
     },
     {
-      heading: `3. How to Tackle Exercises on ${topic}`,
-      body: `When answering exercise questions on this lesson, follow these steps:`,
+      heading: `3. Key Terms and What They Mean`,
+      body: `Master these key terms — use them correctly in your answers, diagrams, and labels when studying ${topic}:`,
+      bulletPoints: keywords.slice(0, 6).map((k, idx) => `${k} — ${getTermDefinition(k, inputs.subject, topic, idx, exemplarText)}`)
+    },
+    ...(workedExample ? [{
+      heading: `4. Worked Example from the Curriculum`,
+      body: `This is a real example from the NaCCA curriculum guide. Study how it is carried out, then complete your own version in your exercise book:`,
+      bulletPoints: [
+        workedExample.charAt(0).toUpperCase() + workedExample.slice(1).replace(/\.*$/, ''),
+        `Ask yourself: what is the first step in this example? What materials or facts does it need? Write your own step-by-step version using the key terms above.`
+      ]
+    }] : []),
+    {
+      heading: `5. How to Tackle the Exercises`,
+      body: `When answering the exercise questions for this lesson, follow these steps:`,
       bulletPoints: [
         `Read each question carefully and identify exactly what it is asking for.`,
         `Use the key terms from the lesson correctly in your answers.`,
         `Label your diagrams clearly and completely when asked to draw.`,
-        `Check your answers against the lesson notes before finishing.`
+        `Check your answers against the lesson notes above before finishing.`
       ]
     }
   ] : isHistoryOrHumanities ? [
@@ -347,14 +363,14 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
   ];
 
   const learnerNotes = {
-    title: `LEARNER NOTES & STUDY SUMMARY: ${inputs.subject.toUpperCase()} - ${inputs.subStrand.toUpperCase()}`,
+    title: `LEARNER NOTES & STUDY SUMMARY: ${inputs.subject.toUpperCase()} - ${topic}`,
     introduction: `Welcome to your study guide on ${topic} in ${inputs.subject}. In Ghana's National Standard-Based Curriculum (NSBC), mastering ${topic} provides you with foundational knowledge, logical reasoning skills, and practical tools for academic success and everyday decision-making in your community.`,
     keyDefinitions: keywords.map((kw, idx) => ({
       term: kw,
       definition: getTermDefinition(kw, inputs.subject, topic, idx, exemplarText)
     })),
     mainContentPoints,
-    summary: `${topic} is an integral part of your ${inputs.subject} study. To master this topic, regularly review your key definitions (${keywords.join(', ')}), practice all assigned exercises across the ${numDays} lesson day(s), and apply these principles in daily activities!`
+    summary: `In this study guide you covered ${topic}. In the curriculum, this lesson is about ${lowerFirst(noEndPeriod(cleanDesc(csDescription)))}. Master the key terms — ${keywords.slice(0, 5).join(', ')} — and revise the key points above regularly. Before the next lesson: (1) rewrite the key terms and their meanings from memory, (2) complete all the day-by-day exercises, and (3) explain one example of ${topic} to a classmate in your own words.`
   };
 
   // Generate Multi-Day Exercises (2 FIBs, 2 MCQs, 2 Matching, 2 Application, 2 Diagram per day - 5 Qs each)
@@ -586,11 +602,13 @@ export const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$
 export function splitSentences(text: string): string[] {
   if (!text) return [];
   const norm = text.replace(/\s+/g, ' ').trim();
-  const parts = norm.split(/(?<=[.!?])\s+/);
+  // Protect common abbreviations so "e.g." / "i.e." do not split sentences.
+  const protectedText = norm.replace(/\b(e\.g|i\.e|etc|vs)\./g, (m) => m.slice(0, -1) + '\u0000');
+  const parts = protectedText.split(/(?<=[.!?])\s+/);
   const out: string[] = [];
   const seen = new Set<string>();
   for (let p of parts) {
-    p = p.trim();
+    p = p.trim().replace(/\u0000/g, '.');
     // Strip list markers that the source text glues onto sentence fragments
     // ("(i) ..." at the start, "iii." at the end).
     p = p.replace(/^\s*\([ivx]+\)\s*/i, '').replace(/\s*\(?[ivx]+\)?\.\s*$/i, '').trim();

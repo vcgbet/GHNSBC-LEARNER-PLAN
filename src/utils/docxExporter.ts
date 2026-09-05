@@ -1,4 +1,14 @@
 import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, HeadingLevel, AlignmentType, PageBreak, ImageRun } from 'docx';
+
+// Rubric labels ("Sub-strand 1: X") belong in the header table only — learner
+// exercise pages show the clean content topic.
+function cleanTopicLabel(sub?: string): string {
+  let c = (sub || '').replace(/^(Sub-)?Strand\s+\d+\s*:?/i, '').trim();
+  if (c.length > 0 && c === c.toUpperCase()) {
+    c = c.toLowerCase().replace(/(^|\s)\p{L}/gu, (ch) => ch.toUpperCase());
+  }
+  return c || (sub || '');
+}
 import { LearnerPlanOutput } from '../types';
 import { sanitizePerformanceIndicator } from './formatUtils';
 import { getNaCCACurriculumReference } from './naccaReferences';
@@ -426,7 +436,7 @@ export async function exportToDocx(plan: LearnerPlanOutput): Promise<Blob> {
     }),
     new Paragraph({
       alignment: AlignmentType.CENTER,
-      children: [new TextRun({ text: `Class: ${header?.classLevel} | Topic: ${header?.subStrand}`, size: 20, italics: true })],
+      children: [new TextRun({ text: `Class: ${header?.classLevel} | Topic: ${cleanTopicLabel(header?.subStrand)}`, size: 20, italics: true })],
       spacing: { after: 200 }
     })
   ];
