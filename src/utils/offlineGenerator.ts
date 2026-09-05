@@ -98,8 +98,12 @@ export function generateOfflinePlan(rawInputs: PlanFormInputs): LearnerPlanOutpu
   const cleanLabel = (s: string) => (s || '').replace(/^(Sub-)?Strand\s+\d+\s*:?\s*/i, '').trim();
   const prettyTopic = (s: string) => {
     const c = cleanLabel(s);
-    // Single all-caps label ("NUMBER") reads better title-cased ("Number").
-    return c === c.toUpperCase() && !c.includes(' ') ? c.charAt(0).toUpperCase() + c.slice(1).toLowerCase() : c;
+    // All-caps labels read better title-cased in lesson text
+    // ("THE SOLAR SYSTEM" -> "The Solar System"), single- and multi-word alike.
+    if (c.length > 0 && c === c.toUpperCase()) {
+      return c.toLowerCase().replace(/(^|\s)\p{L}/gu, (ch) => ch.toUpperCase());
+    }
+    return c;
   };
   const topic = prettyTopic(inputs.subStrand) || prettyTopic(inputs.strand) || inputs.subject;
 
@@ -1381,7 +1385,9 @@ function generateDailyDiagramExercises(day: number, inputs: PlanFormInputs, keyw
     // Upper Primary & JHS (Basic 4-9): Subject diagrams, system schematics, charts, maps, geometric figures
     // For Mathematics, a genuine place value chart built from a real number
     // in the official curriculum examples replaces the generic schematic.
-    const chartNum = /math/i.test(inputs.subject) ? findChartNumber(sentences.join(' ')) : null;
+    const isMath = /math/i.test(inputs.subject || '');
+    const [ck1, ck2, ck3] = [keywords[0] || 'Key Idea 1', keywords[1] || 'Key Idea 2', keywords[2] || 'Key Idea 3'];
+    const chartNum = isMath ? findChartNumber(sentences.join(' ')) : null;
     const pvChart = chartNum ? buildPlaceValueChart(chartNum) : null;
 
     const ex1: ExerciseDiagram[] = [
@@ -1397,18 +1403,32 @@ function generateDailyDiagramExercises(day: number, inputs: PlanFormInputs, keyw
         question: `(Day ${day} • Exercise 1) Based on the diagram above, state the function of Part (A) and Part (B) in relation to ${topic}.`,
         expectedAnswer: `Part (A) serves as the primary initiation/input component; Part (B) executes core processing/transformation according to principles of ${inputs.subject}.`
       },
-      {
-        id: `diag_d${day}_ex1_q2`,
-        dayNumber: day,
-        exerciseNumber: 1,
-        questionNumber: 2,
-        diagramCategory: 'Picture Identification',
-        diagramTitle: `Scientific / Mathematical Model Identification (${topic})`,
-        diagramPrompt: `Analyze the visual model below and determine which concept of ${topic} it illustrates.`,
-        diagramAsciiOrDescription: `┌────────────────────────────────────────────────────────┐\n│  [ CONCEPTUAL MODEL BOX ]                              │\n│   Th (Thousands) │ H (Hundreds) │ T (Tens) │ O (Ones)  │\n│   [ ● ● ● ● ]    │ [ ● ● ]      │ [ ● ● ● ]│ [ ● ● ● ●]│\n│   Value = 4,234                                        │\n└────────────────────────────────────────────────────────┘`,
-        question: `(Day ${day} • Exercise 1) Identify the mathematical or conceptual model shown in the box and write the exact value or rule it represents.`,
-        expectedAnswer: `Place Value Chart / Conceptual Block Model representing standard positional notation.`
-      },
+      (isMath
+        ? {
+            id: `diag_d${day}_ex1_q2`,
+            dayNumber: day,
+            exerciseNumber: 1,
+            questionNumber: 2,
+            diagramCategory: 'Picture Identification',
+            diagramTitle: `Scientific / Mathematical Model Identification (${topic})`,
+            diagramPrompt: `Analyze the visual model below and determine which concept of ${topic} it illustrates.`,
+            diagramAsciiOrDescription: `┌────────────────────────────────────────────────────────┐\n│  [ CONCEPTUAL MODEL BOX ]                              │\n│   Th (Thousands) │ H (Hundreds) │ T (Tens) │ O (Ones)  │\n│   [ ● ● ● ● ]    │ [ ● ● ]      │ [ ● ● ● ]│ [ ● ● ● ●]│\n│   Value = 4,234                                        │\n└────────────────────────────────────────────────────────┘`,
+            question: `(Day ${day} • Exercise 1) Identify the mathematical or conceptual model shown in the box and write the exact value or rule it represents.`,
+            expectedAnswer: `Place Value Chart / Conceptual Block Model representing standard positional notation.`
+          }
+        : {
+            id: `diag_d${day}_ex1_q2`,
+            dayNumber: day,
+            exerciseNumber: 1,
+            questionNumber: 2,
+            diagramCategory: 'Picture Identification',
+            diagramTitle: `Concept Model Identification (${topic})`,
+            diagramPrompt: `Analyze the concept model below. It links three key ideas of ${topic}.`,
+            diagramAsciiOrDescription: `┌────────────────────────────────────────────────────────┐\n│  [ CONCEPT MODEL: ${topic.toUpperCase()} ]                     │\n│                                                        │\n│    ( ${ck1} )  ──►  ( ${ck2} )  ──►  ( ${ck3} )      │\n│                                                        │\n│  Three key ideas from the lesson, linked together.     │\n└────────────────────────────────────────────────────────┘`,
+            question: `(Day ${day} • Exercise 1) Name the three key ideas in the model and explain in one sentence how they are connected in ${topic}.`,
+            expectedAnswer: `${ck1}, ${ck2} and ${ck3} — the learner explains in their own words how the three ideas connect in ${topic}.`
+          }
+      ),
       {
         id: `diag_d${day}_ex1_q3`,
         dayNumber: day,
@@ -1473,7 +1493,7 @@ function generateDailyDiagramExercises(day: number, inputs: PlanFormInputs, keyw
         diagramPrompt: `Study the process cycle below. One stage is missing, marked 'Stage X'. Identify it and explain why it is essential for completing the process.`,
         diagramAsciiOrDescription: `┌────────────────────────────────────────────────────────┐\n│  [ CONTINUOUS PROCESS CYCLE ]                          │\n│             ┌─────────────────────────┐                │\n│             │ Stage 1: Preparation    │                │\n│             └────────────┬────────────┘                │\n│         ▲                │                ▼            │\n│  ┌──────┴──────┐         │         ┌──────┴──────┐     │\n│  │ [ Stage X ] │ ◄───────┴─────────┤ Stage 2:    │     │\n│  │ (Identify)  │                   │ Execution   │     │\n│  └─────────────┘                   └─────────────┘     │\n└────────────────────────────────────────────────────────┘`,
         question: `(Day ${day} • Exercise 2) Name the stage marked 'Stage X' in the cycle and explain why it is essential for completing the process.`,
-        expectedAnswer: `Stage X is Evaluation / Review / Plenary, ensuring accuracy and mastery before the next cycle.`
+        expectedAnswer: `The missing stage is Evaluation / Review — the step where learners check the result for accuracy before the cycle repeats.`
       },
       {
         id: `diag_d${day}_ex2_q2`,
@@ -1499,18 +1519,32 @@ function generateDailyDiagramExercises(day: number, inputs: PlanFormInputs, keyw
         question: `(Day ${day} • Exercise 2) Write the correct label and function for parts (1), (2), and (3) in your exercise book.`,
         expectedAnswer: `(1) Boundary/Protection; (2) Core Unit/Function; (3) Foundation/Support.`
       },
-      {
-        id: `diag_d${day}_ex2_q4`,
-        dayNumber: day,
-        exerciseNumber: 2,
-        questionNumber: 4,
-        diagramCategory: 'Draw & Illustrate',
-        diagramTitle: `Bar Graph / Data Chart Construction (${topic})`,
-        diagramPrompt: `Using the sample data provided, construct a neat bar chart or frequency diagram.`,
-        diagramAsciiOrDescription: `┌────────────────────────────────────────────────────────┐\n│  [ DATA TABLE ]                                        │\n│   Category A: 10 | Category B: 25 | Category C: 15     │\n└────────────────────────────────────────────────────────┘`,
-        question: `(Day ${day} • Exercise 2) Draw a bar chart with labeled axes (X-axis: Categories, Y-axis: Frequency) representing the data above.`,
-        expectedAnswer: `A neat bar graph with accurately scaled heights (10, 25, 15) and clear title and labels.`
-      },
+      (isMath
+        ? {
+            id: `diag_d${day}_ex2_q4`,
+            dayNumber: day,
+            exerciseNumber: 2,
+            questionNumber: 4,
+            diagramCategory: 'Draw & Illustrate',
+            diagramTitle: `Bar Graph / Data Chart Construction (${topic})`,
+            diagramPrompt: `Using the sample data provided, construct a neat bar chart or frequency diagram.`,
+            diagramAsciiOrDescription: `┌────────────────────────────────────────────────────────┐\n│  [ DATA TABLE ]                                        │\n│   Category A: 10 | Category B: 25 | Category C: 15     │\n└────────────────────────────────────────────────────────┘`,
+            question: `(Day ${day} • Exercise 2) Draw a bar chart with labeled axes (X-axis: Categories, Y-axis: Frequency) representing the data above.`,
+            expectedAnswer: `A neat bar graph with accurately scaled heights (10, 25, 15) and clear title and labels.`
+          }
+        : {
+            id: `diag_d${day}_ex2_q4`,
+            dayNumber: day,
+            exerciseNumber: 2,
+            questionNumber: 4,
+            diagramCategory: 'Draw & Illustrate',
+            diagramTitle: `Feature Chart Construction (${topic})`,
+            diagramPrompt: `Using what you learned in the lesson, organize the key features of ${topic} into a neat labeled chart.`,
+            diagramAsciiOrDescription: `┌────────────────────────────────────────────────────────┐\n│  [ FEATURE CHART TEMPLATE ]                             │\n│   Key Feature          │  How it relates to the lesson  │\n│   ─────────────────────┼─────────────────────────────────│\n│   (i)  [ fill in ]     │  [ fill in ]                   │\n│   (ii) [ fill in ]     │  [ fill in ]                   │\n│   (iii)[ fill in ]     │  [ fill in ]                   │\n└────────────────────────────────────────────────────────┘`,
+            question: `(Day ${day} • Exercise 2) Complete the feature chart with three key features of ${topic} and how each one relates to the lesson.`,
+            expectedAnswer: `Three accurate features of ${topic}, each with a correct short explanation in the learner's own words.`
+          }
+      ),
       {
         id: `diag_d${day}_ex2_q5`,
         dayNumber: day,
@@ -1520,8 +1554,8 @@ function generateDailyDiagramExercises(day: number, inputs: PlanFormInputs, keyw
         diagramTitle: `Mind Map Summary Diagram (${topic})`,
         diagramPrompt: `Create a central mind map connecting ${topic} to its four sub-branches.`,
         diagramAsciiOrDescription: `┌────────────────────────────────────────────────────────┐\n│  [ MIND MAP TEMPLATE ]                                 │\n│                 ┌─────────────┐                        │\n│                 │  ${topic.slice(0, 15)}  │                        │\n│                 └──────┬──────┘                        │\n│            ┌───────────┼───────────┐                   │\n│            ▼           ▼           ▼                   │\n│         Branch 1    Branch 2    Branch 3               │\n└────────────────────────────────────────────────────────┘`,
-        question: `(Day ${day} • Exercise 2) Draw a complete Mind Map in your exercise book showing the core definitions, TLMs, and practical uses of ${topic}.`,
-        expectedAnswer: `A comprehensive mind map linking the central topic to vocabulary, tools, activities, and real-life Ghanaian applications.`
+        question: `(Day ${day} • Exercise 2) Draw a complete mind map in your exercise book showing the key terms, main ideas, and practical uses of ${topic}.`,
+        expectedAnswer: `A comprehensive mind map linking the central topic to key terms, main ideas, and real-life Ghanaian applications.`
       }
     ];
 
