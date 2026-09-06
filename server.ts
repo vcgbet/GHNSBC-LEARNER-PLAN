@@ -59,8 +59,17 @@ let modelsPromise: Promise<string[] | null> | null = null;
 // a while so we do not burn the key's remaining quota on retries that are
 // guaranteed to fail, and the UI gets a fast, honest offline fallback.
 let QUOTA_EXHAUSTED_UNTIL = 0;
-const QUOTA_PAUSE_MS = 30 * 60 * 1000;
+const QUOTA_PAUSE_MS = 10 * 60 * 1000;
 const QUOTA_DEAD_PATTERN = /exceeded your current quota|check your plan and billing/i;
+
+// Free-tier daily quota is PER-MODEL (quotaId: ...PerProjectPerModel-FreeTier):
+// every model in the pool has its own daily bucket. When a model's bucket is
+// exhausted we mark THAT model until the next daily reset (~08:00 Ghana time)
+// and keep trying the other models — one model hitting its cap no longer
+// takes the whole AI engine offline.
+const QUOTA_EXHAUSTED_MODELS = new Map<string, number>();
+const QUOTA_EXPIRY_MS = 20 * 60 * 60 * 1000; // safely beyond the daily reset
+const isQuotaExhausted = (m: string) => (QUOTA_EXHAUSTED_MODELS.get(m) || 0) > Date.now();
 
 function getAvailableModels(): Promise<string[] | null> {
   if (!modelsPromise) {
@@ -86,15 +95,15 @@ async function getAiSlots(): Promise<Array<{ model: string; delayMs: number }>> 
   const available = await getAvailableModels();
   let pool: string[];
   if (available) {
-    const usable = available.filter(m => !DEAD_MODELS.has(m) && /flash/i.test(m));
+    const usable = available.filter(m => !DEAD_MODELS.has(m) && !isQuotaExhausted(m) && /flash/i.test(m));
     pool = [
       ...MODEL_PREFERENCE.filter(m => usable.includes(m)),
       ...usable.filter(m => !MODEL_PREFERENCE.includes(m))
     ];
   } else {
-    pool = MODEL_PREFERENCE.filter(m => !DEAD_MODELS.has(m));
+    pool = MODEL_PREFERENCE.filter(m => !DEAD_MODELS.has(m) && !isQuotaExhausted(m));
   }
-  if (pool.length === 0) pool = ["gemini-3.6-flash"];
+  if (pool.length === 0) return []; // every model dead or quota-exhausted → caller serves offline
   const primary = pool[0];
   const secondary = pool[1] || pool[0];
   return [
@@ -246,7 +255,7 @@ app.post("/api/generate-plan", async (req, res) => {
       ...generateOfflinePlan(inputs),
       generationMode: "Offline Engine",
       aiFailed: true,
-      aiError: `Gemini daily quota is currently exhausted. AI generation will resume automatically (the free tier resets each day, around 08:00 Ghana time). Retry in ~${mins} minutes or tomorrow morning.`
+      aiError: `The free AI daily quota is currently paused. AI generation will resume automatically (the free tier resets each day around 08:00 Ghana time, and the server switches to any model that still has free quota). Retry in ~${mins} minutes.`
     });
   }
 
@@ -293,6 +302,10 @@ ${dayObjectives.map((o, i) => `     Day ${i + 1}: Learner can ${o}`).join("\n")}
   const callGeminiJson = async (contents: string, config: any, label: string): Promise<any> => {
     let lastErr: any = null;
     const slots = await getAiSlots();
+    if (slots.length === 0) {
+      QUOTA_EXHAUSTED_UNTIL = Date.now() + QUOTA_PAUSE_MS;
+      throw new Error("The free AI daily quota is currently exhausted for all available models today. The free tier resets each day around 08:00 Ghana time — AI generation will resume automatically.");
+    }
     for (const slot of slots) {
       if (slot.delayMs > 0) await new Promise(r => setTimeout(r, slot.delayMs));
       for (let sample = 1; sample <= 2; sample++) {
@@ -319,9 +332,9 @@ ${dayObjectives.map((o, i) => `     Day ${i + 1}: Learner can ${o}`).join("\n")}
           // Hard daily-quota exhaustion — will not clear during this request.
           // Start the cooldown and abort the AI path immediately.
           if (QUOTA_DEAD_PATTERN.test(msg)) {
-            QUOTA_EXHAUSTED_UNTIL = Date.now() + QUOTA_PAUSE_MS;
-            console.error("[AI] Daily quota exhausted — pausing AI attempts for 30 minutes.");
-            throw e;
+            QUOTA_EXHAUSTED_MODELS.set(slot.model, Date.now() + QUOTA_EXPIRY_MS);
+            console.error(`[AI] ${slot.model} daily quota exhausted — marked until next daily reset (~08:00 Ghana time); trying remaining models.`);
+            break; // this model's bucket is empty for the day — next model slot
           }
           // Model no longer exists for this key → remember it, try next slot.
           const deadModel = /404|not_found|no longer available/i.test(`${code} ${msg}`) && /model/i.test(msg);
@@ -335,6 +348,10 @@ ${dayObjectives.map((o, i) => `     Day ${i + 1}: Learner can ${o}`).join("\n")}
           break; // transient API error or dead model — next slot (its delay applies)
         }
       }
+    }
+    if (lastErr && QUOTA_DEAD_PATTERN.test(String(lastErr?.message ?? lastErr))) {
+      QUOTA_EXHAUSTED_UNTIL = Date.now() + QUOTA_PAUSE_MS;
+      throw new Error("The free AI daily quota is currently exhausted for all available models today. The free tier resets each day around 08:00 Ghana time — AI generation will resume automatically.");
     }
     throw lastErr || new Error(`AI call failed: ${label}`);
   };
@@ -787,8 +804,12 @@ e) diagram: 10 items. Tailored strictly to class level:
     const finalPlan = backfillExercises(plan, generateOfflinePlan(inputs));
     return res.json(finalPlan);
   } catch (err: any) {
-    const errMsg = String(err?.message || err || 'unknown AI error');
+    let errMsg = String(err?.message || err || 'unknown AI error');
     const errCode = String(err?.code || err?.status || '');
+    // Never show teachers the raw API error JSON — friendly message instead.
+    if (QUOTA_DEAD_PATTERN.test(errMsg) || /429|resource_?exhausted|quota/i.test(`${errCode} ${errMsg}`)) {
+      errMsg = "The free AI daily quota is currently exhausted for all available models. AI generation will resume automatically (the free tier resets each day around 08:00 Ghana time).";
+    }
     console.error(`Gemini AI plan generation failed (code=${errCode}), falling back to offline engine:`, errMsg);
     const offlinePlan = generateOfflinePlan(inputs);
     // aiFailed/aiError are surfaced to the client so the UI can tell the
