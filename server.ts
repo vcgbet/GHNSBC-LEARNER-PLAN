@@ -104,14 +104,10 @@ async function getAiSlots(): Promise<Array<{ model: string; delayMs: number }>> 
     pool = MODEL_PREFERENCE.filter(m => !DEAD_MODELS.has(m) && !isQuotaExhausted(m));
   }
   if (pool.length === 0) return []; // every model dead or quota-exhausted → caller serves offline
-  const primary = pool[0];
-  const secondary = pool[1] || pool[0];
-  return [
-    { model: primary, delayMs: 0 },
-    { model: secondary, delayMs: 0 },
-    { model: primary, delayMs: 20000 },
-    { model: secondary, delayMs: 45000 }
-  ];
+  // One call per model (in preference order, small spacing between calls):
+  // the first model whose free daily bucket still has room wins. Cap at 6
+  // models to bound request time.
+  return pool.slice(0, 6).map((m, i) => ({ model: m, delayMs: i === 0 ? 0 : 2000 }));
 }
 
 // Key words must be REAL subject vocabulary from the lesson content —
@@ -307,6 +303,7 @@ ${dayObjectives.map((o, i) => `     Day ${i + 1}: Learner can ${o}`).join("\n")}
       throw new Error("The free AI daily quota is currently exhausted for all available models today. The free tier resets each day around 08:00 Ghana time — AI generation will resume automatically.");
     }
     for (const slot of slots) {
+      if (isQuotaExhausted(slot.model)) continue; // marked during this request
       if (slot.delayMs > 0) await new Promise(r => setTimeout(r, slot.delayMs));
       for (let sample = 1; sample <= 2; sample++) {
         try {
